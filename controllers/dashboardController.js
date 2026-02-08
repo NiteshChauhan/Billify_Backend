@@ -1,11 +1,15 @@
-const SalesInvoice = require("../models/SalesInvoice");
-const PurchaseInvoice = require("../models/PurchaseInvoice");
-const Payment = require("../models/Payment");
-const Product = require("../models/Product");
+import SalesInvoice from "../models/SalesInvoice";
+import PurchaseInvoice from "../models/PurchaseInvoice";
+import Payment from "../models/Payment";
+import Product from "../models/Product";
 
-exports.getDashboardSummary = async (req, res) => {
+export const getDashboardSummary = async (req, res) => {
   try {
     const companyId = req.user.companyId;
+
+    if (!companyId) {
+      return res.status(400).json({ message: "Company not found in token" });
+    }
 
     /* ================= KPI TOTALS ================= */
 
@@ -69,17 +73,20 @@ exports.getDashboardSummary = async (req, res) => {
     const mapMonthly = (data) =>
       months.map((m) => data.find((d) => d._id === m)?.total || 0);
 
-    res.json({
+    return res.status(200).json({
+      success: true,
       totalSales: salesAgg?.total || 0,
       totalPurchase: purchaseAgg?.total || 0,
       totalPayments: paymentAgg?.total || 0,
       totalProducts,
-
       monthlySales: mapMonthly(salesMonthly),
       monthlyPurchase: mapMonthly(purchaseMonthly),
     });
   } catch (err) {
     console.error("Dashboard Error:", err);
-    res.status(500).json({ error: "Failed to load dashboard" });
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load dashboard",
+    });
   }
 };

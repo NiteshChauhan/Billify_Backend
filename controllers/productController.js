@@ -1,80 +1,83 @@
-const Product = require("../models/Product");
+import Product from "../models/Product";
 
 /* ================= CREATE PRODUCT ================= */
-exports.createProduct = async (req, res) => {
+export const createProduct = async (req, res) => {
   try {
     const { name, sku } = req.body;
 
     if (!name || !sku) {
       return res.status(400).json({
-        message: "Product name and SKU are required"
+        message: "Product name and SKU are required",
       });
     }
 
-    /* ✅ SAVE FULL BODY (attributes, unit, gst, etc.) */
     const product = await Product.create({
       companyId: req.user.companyId,
-      ...req.body
+      ...req.body,
     });
 
-    res.json(product);
+    res.status(201).json(product);
   } catch (err) {
     res.status(500).json({
       message: "Failed to create product",
-      error: err.message
+      error: err.message,
     });
   }
 };
 
 /* ================= GET ALL PRODUCTS ================= */
-exports.getProducts = async (req, res) => {
+export const getProducts = async (req, res) => {
   try {
     const products = await Product.find({
-      companyId: req.user.companyId
+      companyId: req.user.companyId,
     }).sort({ createdAt: -1 });
 
     res.json(products);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to load products"
+      message: "Failed to load products",
     });
   }
 };
 
 /* ================= GET SINGLE PRODUCT ================= */
-exports.getProductById = async (req, res) => {
+export const getProductById = async (req, res) => {
   try {
+    const { id } = req.query;
+
     const product = await Product.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId
+      _id: id,
+      companyId: req.user.companyId,
     });
 
     if (!product) {
       return res.status(404).json({
-        message: "Product not found"
+        message: "Product not found",
       });
     }
 
     res.json(product);
   } catch (err) {
     res.status(500).json({
-      message: "Failed to load product"
+      message: "Failed to load product",
     });
   }
 };
 
 /* ================= UPDATE PRODUCT ================= */
-exports.updateProduct = async (req, res) => {
+export const updateProduct = async (req, res) => {
   try {
+    const { id } = req.query;
+
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, companyId: req.user.companyId },
+      { _id: id, companyId: req.user.companyId },
       { ...req.body },
-      { new: true }
+      { new: true },
     );
 
     if (!product) {
       return res.status(404).json({
-        message: "Product not found"
+        message: "Product not found",
       });
     }
 
@@ -82,25 +85,27 @@ exports.updateProduct = async (req, res) => {
   } catch (err) {
     res.status(500).json({
       message: "Failed to update product",
-      error: err.message
+      error: err.message,
     });
   }
 };
 
 /* ================= DELETE PRODUCT ================= */
-exports.deleteProduct = async (req, res) => {
+export const deleteProduct = async (req, res) => {
   try {
+    const { id } = req.query;
+
     await Product.findOneAndDelete({
-      _id: req.params.id,
-      companyId: req.user.companyId
+      _id: id,
+      companyId: req.user.companyId,
     });
 
     res.json({
-      message: "Product deleted successfully"
+      message: "Product deleted successfully",
     });
   } catch (err) {
     res.status(500).json({
-      message: "Failed to delete product"
+      message: "Failed to delete product",
     });
   }
 };

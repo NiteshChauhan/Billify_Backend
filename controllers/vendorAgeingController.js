@@ -1,7 +1,7 @@
-const Vendor = require("../models/Vendor");
-const SalesInvoice = require("../models/SalesInvoice");
+import Vendor from "../models/Vendor";
+import SalesInvoice from "../models/SalesInvoice";
 
-exports.getVendorAgeing = async (req, res) => {
+export const getVendorAgeing = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const today = new Date();
@@ -52,8 +52,8 @@ exports.getVendorAgeing = async (req, res) => {
       }
     }
 
-    res.json(report);
+    return res.json(report);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };

@@ -1,14 +1,16 @@
-const SalesInvoice = require("../models/SalesInvoice");
-const Payment = require("../models/Payment");
-const Vendor = require("../models/Vendor");
+import SalesInvoice from "../models/SalesInvoice";
+import Payment from "../models/Payment";
+import Vendor from "../models/Vendor";
 
-exports.getVendorLedger = async (req, res) => {
+export const getVendorLedger = async (req, res) => {
   try {
-    const { id } = req.params;
+    // 🔑 Vercel dynamic route param
+    const { id } = req.query;
+    const companyId = req.user.companyId;
 
     const vendor = await Vendor.findOne({
       _id: id,
-      companyId: req.user.companyId,
+      companyId,
     });
 
     if (!vendor) {
@@ -18,15 +20,15 @@ exports.getVendorLedger = async (req, res) => {
     /* ================= SALES INVOICES ================= */
     const invoices = await SalesInvoice.find({
       vendorId: id,
-      companyId: req.user.companyId,
+      companyId,
     });
 
     /* ================= RECEIPTS ================= */
     const receipts = await Payment.find({
       partyId: id,
       partyType: "VENDOR",
-      invoiceType: "SALE", // ✅ FIXED
-      companyId: req.user.companyId,
+      invoiceType: "SALE",
+      companyId,
     });
 
     let ledger = [];
@@ -35,7 +37,7 @@ exports.getVendorLedger = async (req, res) => {
       ledger.push({
         date: i.invoiceDate,
         particulars: `Sales Invoice ${i.invoiceNo || ""}`,
-        debit: i.totalAmount,
+        debit: i.totalAmount || 0,
         credit: 0,
       });
     });
@@ -45,12 +47,14 @@ exports.getVendorLedger = async (req, res) => {
         date: r.createdAt,
         particulars: `Receipt (${r.paymentMode})`,
         debit: 0,
-        credit: r.amount,
+        credit: r.amount || 0,
       });
     });
 
+    /* ================= SORT BY DATE ================= */
     ledger.sort((a, b) => new Date(a.date) - new Date(b.date));
 
+    /* ================= RUNNING BALANCE ================= */
     let running = vendor.openingBalance || 0;
 
     ledger = ledger.map((l) => {
@@ -61,7 +65,7 @@ exports.getVendorLedger = async (req, res) => {
       };
     });
 
-    res.json({
+    return res.json({
       vendor,
       openingBalance: vendor.openingBalance || 0,
       closingBalance: running,
@@ -69,6 +73,6 @@ exports.getVendorLedger = async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };

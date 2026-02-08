@@ -1,15 +1,15 @@
-const PurchaseInvoice = require("../models/PurchaseInvoice");
-const Payment = require("../models/Payment");
-const Supplier = require("../models/Supplier");
+import PurchaseInvoice from "../models/PurchaseInvoice";
+import Payment from "../models/Payment";
+import Supplier from "../models/Supplier";
 
-exports.getSupplierLedger = async (req, res) => {
+export const getSupplierLedger = async (req, res) => {
   try {
-    const { supplierId } = req.params;
+    const { supplierId } = req.query; // ⬅️ IMPORTANT for Vercel
     const companyId = req.user.companyId;
 
     const supplier = await Supplier.findOne({
       _id: supplierId,
-      companyId
+      companyId,
     });
 
     if (!supplier) {
@@ -19,36 +19,36 @@ exports.getSupplierLedger = async (req, res) => {
     /* ---------------- Purchases ---------------- */
     const purchases = await PurchaseInvoice.find({
       companyId,
-      supplierId
+      supplierId,
     }).select("invoiceDate totalAmount invoiceNo");
 
     /* ---------------- Payments ---------------- */
     const payments = await Payment.find({
       companyId,
       partyType: "SUPPLIER",
-      partyId: supplierId
+      partyId: supplierId,
     }).select("paymentDate amount paymentMode referenceNo");
 
     /* ---------------- Merge Ledger ---------------- */
     let ledger = [];
 
-    purchases.forEach(p => {
+    purchases.forEach((p) => {
       ledger.push({
         date: p.invoiceDate,
         type: "PURCHASE",
-        particulars: `Purchase Invoice`,
+        particulars: "Purchase Invoice",
         debit: p.totalAmount,
-        credit: 0
+        credit: 0,
       });
     });
 
-    payments.forEach(p => {
+    payments.forEach((p) => {
       ledger.push({
         date: p.paymentDate,
         type: "PAYMENT",
         particulars: `Payment (${p.paymentMode})`,
         debit: 0,
-        credit: p.amount
+        credit: p.amount,
       });
     });
 
@@ -58,17 +58,19 @@ exports.getSupplierLedger = async (req, res) => {
     /* ---------------- Running Balance ---------------- */
     let balance = supplier.openingBalance || 0;
 
-    ledger = ledger.map(l => {
-      balance = balance + l.debit - l.credit;
-      return { ...l, balance };
+    ledger = ledger.map((entry) => {
+      balance = balance + entry.debit - entry.credit;
+      return { ...entry, balance };
     });
 
-    res.json({
+    return res.json({
       supplier,
-      ledger
+      ledger,
     });
-
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({
+      message: "Failed to load supplier ledger",
+      error: err.message,
+    });
   }
 };

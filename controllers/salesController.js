@@ -1,21 +1,23 @@
-const SalesInvoice = require("../models/SalesInvoice");
-const StockLedger = require("../models/StockLedger");
-const Vendor = require("../models/Vendor");
-const { validateStockForSale } = require("../utils/stockValidation");
+import SalesInvoice from "@/models/SalesInvoice";
+import StockLedger from "@/models/StockLedger";
+import Vendor from "@/models/Vendor";
+import { validateStockForSale } from "@/utils/stockValidation";
 
 /* ================= CREATE SALES INVOICE ================= */
-exports.createSalesInvoice = async (req, res) => {
+export const createSalesInvoice = async (req, res) => {
   try {
     const { vendorId, items, tax = 0, paidAmount = 0, invoiceDate } = req.body;
 
     if (!vendorId || !items || items.length === 0) {
-      return res.status(400).json({ message: "Vendor & items required" });
+      return res.status(400).json({
+        message: "Vendor & items required",
+      });
     }
 
-    // 1️⃣ Validate stock
+    /* 🔒 STOCK VALIDATION */
     await validateStockForSale(req.user.companyId, items);
 
-    // 2️⃣ Calculate totals
+    /* 🔢 CALCULATE TOTAL */
     let subtotal = 0;
     items.forEach((i) => {
       if (!i.productId || !i.quantity || !i.rate) {
@@ -27,13 +29,13 @@ exports.createSalesInvoice = async (req, res) => {
 
     const totalAmount = subtotal + tax;
 
-    // 3️⃣ Auto Invoice No
+    /* 🔢 AUTO INVOICE NO */
     const count = await SalesInvoice.countDocuments({
       companyId: req.user.companyId,
     });
     const invoiceNo = `SAL-${count + 1}`;
 
-    // 4️⃣ Create invoice
+    /* 🧾 CREATE INVOICE */
     const invoice = await SalesInvoice.create({
       companyId: req.user.companyId,
       vendorId,
@@ -48,7 +50,7 @@ exports.createSalesInvoice = async (req, res) => {
         paidAmount >= totalAmount ? "PAID" : paidAmount > 0 ? "PARTIAL" : "DUE",
     });
 
-    // 5️⃣ Stock Ledger (SALE)
+    /* 📦 STOCK LEDGER (SALE) */
     for (const item of items) {
       await StockLedger.create({
         companyId: req.user.companyId,
@@ -61,20 +63,23 @@ exports.createSalesInvoice = async (req, res) => {
       });
     }
 
-    // 6️⃣ Update vendor balance
+    /* 💰 UPDATE VENDOR BALANCE */
     const vendor = await Vendor.findById(vendorId);
-    vendor.balance += totalAmount - paidAmount;
+    vendor.balance = (vendor.balance || 0) + (totalAmount - paidAmount);
     await vendor.save();
 
     res.json(invoice);
   } catch (err) {
+    console.error("Sales Error:", err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /* ================= GET SALES LIST ================= */
-exports.getSales = async (req, res) => {
-  const data = await SalesInvoice.find({ companyId: req.user.companyId })
+export const getSales = async (req, res) => {
+  const data = await SalesInvoice.find({
+    companyId: req.user.companyId,
+  })
     .populate("vendorId", "name")
     .sort({ createdAt: -1 });
 
@@ -82,8 +87,8 @@ exports.getSales = async (req, res) => {
 };
 
 /* ================= GET SALES BY ID ================= */
-exports.getSalesById = async (req, res) => {
-  const invoice = await SalesInvoice.findById(req.params.id)
+export const getSalesById = async (req, res) => {
+  const invoice = await SalesInvoice.findById(req.query.id)
     .populate("vendorId", "name")
     .populate("items.productId", "name");
 

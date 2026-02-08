@@ -1,7 +1,7 @@
-const Vendor = require("../models/Vendor");
-const SalesInvoice = require("../models/SalesInvoice");
+import Vendor from "../models/Vendor";
+import SalesInvoice from "../models/SalesInvoice";
 
-exports.getVendorOutstanding = async (req, res) => {
+export const getVendorOutstanding = async (req, res) => {
   try {
     const companyId = req.user.companyId;
 
@@ -51,9 +51,9 @@ exports.getVendorOutstanding = async (req, res) => {
       };
     });
 
-    res.json(report);
+    return res.json(report);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };

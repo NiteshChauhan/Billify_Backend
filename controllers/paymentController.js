@@ -1,11 +1,11 @@
-const Payment = require("../models/Payment");
-const Supplier = require("../models/Supplier");
-const Vendor = require("../models/Vendor");
-const PurchaseInvoice = require("../models/PurchaseInvoice");
-const SalesInvoice = require("../models/SalesInvoice");
+import Payment from "../models/Payment";
+import Supplier from "../models/Supplier";
+import Vendor from "../models/Vendor";
+import PurchaseInvoice from "../models/PurchaseInvoice";
+import SalesInvoice from "../models/SalesInvoice";
 
 /* ================= CREATE PAYMENT ================= */
-exports.createPayment = async (req, res) => {
+export const createPayment = async (req, res) => {
   try {
     const {
       partyType,
@@ -18,17 +18,17 @@ exports.createPayment = async (req, res) => {
       remarks,
     } = req.body;
 
+    const companyId = req.user.companyId;
+
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: "Invalid payment amount" });
     }
 
-    /* =====================================================
-       🟢 PURCHASE PAYMENT (Supplier)
-    ===================================================== */
+    /* ================= PURCHASE PAYMENT ================= */
     if (invoiceType === "PURCHASE") {
       const invoice = await PurchaseInvoice.findOne({
         _id: invoiceId,
-        companyId: req.user.companyId,
+        companyId,
       });
 
       if (!invoice) {
@@ -36,7 +36,7 @@ exports.createPayment = async (req, res) => {
       }
 
       const payments = await Payment.find({
-        companyId: req.user.companyId,
+        companyId,
         invoiceId,
         invoiceType: "PURCHASE",
       });
@@ -51,7 +51,7 @@ exports.createPayment = async (req, res) => {
       }
 
       const payment = await Payment.create({
-        companyId: req.user.companyId,
+        companyId,
         partyType,
         partyId,
         invoiceType,
@@ -69,19 +69,16 @@ exports.createPayment = async (req, res) => {
       invoice.paidAmount = alreadyPaid + amount;
       invoice.status =
         invoice.paidAmount >= invoice.totalAmount ? "PAID" : "PARTIAL";
-
       await invoice.save();
 
-      return res.json({ payment, invoice });
+      return res.status(201).json({ payment, invoice });
     }
 
-    /* =====================================================
-       🔵 SALES PAYMENT (Customer / Vendor)
-    ===================================================== */
+    /* ================= SALES PAYMENT ================= */
     if (invoiceType === "SALE") {
       const invoice = await SalesInvoice.findOne({
         _id: invoiceId,
-        companyId: req.user.companyId,
+        companyId,
       });
 
       if (!invoice) {
@@ -89,7 +86,7 @@ exports.createPayment = async (req, res) => {
       }
 
       const payments = await Payment.find({
-        companyId: req.user.companyId,
+        companyId,
         invoiceId,
         invoiceType: "SALE",
       });
@@ -104,7 +101,7 @@ exports.createPayment = async (req, res) => {
       }
 
       const payment = await Payment.create({
-        companyId: req.user.companyId,
+        companyId,
         partyType,
         partyId,
         invoiceType,
@@ -116,33 +113,38 @@ exports.createPayment = async (req, res) => {
       });
 
       const vendor = await Vendor.findById(partyId);
-      vendor.balance -= amount; // customer paid → receivable reduced
+      vendor.balance -= amount;
       await vendor.save();
 
       invoice.paidAmount = alreadyPaid + amount;
       invoice.status =
         invoice.paidAmount >= invoice.totalAmount ? "PAID" : "PARTIAL";
-
       await invoice.save();
 
-      return res.json({ payment, invoice });
+      return res.status(201).json({ payment, invoice });
     }
 
-    return res.status(400).json({
-      error: "Invalid invoice type",
-    });
+    return res.status(400).json({ error: "Invalid invoice type" });
   } catch (err) {
-    console.error(err);
-    res.status(400).json({ error: err.message });
+    console.error("Payment Error:", err);
+    res.status(500).json({ error: err.message });
   }
 };
 
 /* ================= GET PAYMENTS BY INVOICE ================= */
-exports.getPaymentsByInvoice = async (req, res) => {
-  const payments = await Payment.find({
-    companyId: req.user.companyId,
-    invoiceId: req.params.invoiceId,
-  }).sort({ createdAt: 1 });
+export const getPaymentsByInvoice = async (req, res) => {
+  try {
+    const { invoiceId } = req.query;
+    const companyId = req.user.companyId;
 
-  res.json(payments);
+    const payments = await Payment.find({
+      companyId,
+      invoiceId,
+    }).sort({ createdAt: 1 });
+
+    res.json(payments);
+  } catch (err) {
+    console.error("Get Payments Error:", err);
+    res.status(500).json({ error: err.message });
+  }
 };

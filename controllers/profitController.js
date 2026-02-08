@@ -1,6 +1,6 @@
-const { getProfitSummary } = require("../utils/profitUtils");
+import { getProfitSummary } from "../utils/profitUtils.js";
 
-exports.getProfit = async (req, res) => {
+export const getProfit = async (req, res) => {
   try {
     const { range, from, to } = req.query;
     const companyId = req.user.companyId;
@@ -14,11 +14,10 @@ exports.getProfit = async (req, res) => {
       fromDate = new Date(from);
       toDate = new Date(to);
 
-      // Ensure end day includes full day
+      // Include full end day
       toDate.setHours(23, 59, 59, 999);
     } else {
-
-    /* ---------- PREDEFINED RANGES ---------- */
+      /* ---------- PREDEFINED RANGES ---------- */
       fromDate = new Date();
 
       switch (range) {

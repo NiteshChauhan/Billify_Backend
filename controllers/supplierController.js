@@ -1,39 +1,47 @@
-const Supplier = require("../models/Supplier");
+import Supplier from "../models/Supplier";
 
-exports.createSupplier = async (req, res) => {
+export const createSupplier = async (req, res) => {
   try {
     const supplier = await Supplier.create({
       companyId: req.user.companyId,
       ...req.body,
-      balance: req.body.openingBalance || 0
+      balance: req.body.openingBalance || 0,
     });
-    res.json(supplier);
+
+    return res.json(supplier);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
 
-exports.getSuppliers = async (req, res) => {
+export const getSuppliers = async (req, res) => {
   const suppliers = await Supplier.find({
     companyId: req.user.companyId,
-    isActive: true
+    isActive: true,
   });
-  res.json(suppliers);
+
+  return res.json(suppliers);
 };
 
-exports.updateSupplier = async (req, res) => {
+export const updateSupplier = async (req, res) => {
+  const { id } = req.query; // ⬅️ Vercel
+
   const supplier = await Supplier.findOneAndUpdate(
-    { _id: req.params.id, companyId: req.user.companyId },
+    { _id: id, companyId: req.user.companyId },
     req.body,
-    { new: true }
+    { new: true },
   );
-  res.json(supplier);
+
+  return res.json(supplier);
 };
 
-exports.deleteSupplier = async (req, res) => {
+export const deleteSupplier = async (req, res) => {
+  const { id } = req.query; // ⬅️ Vercel
+
   await Supplier.findOneAndUpdate(
-    { _id: req.params.id, companyId: req.user.companyId },
-    { isActive: false }
+    { _id: id, companyId: req.user.companyId },
+    { isActive: false },
   );
-  res.json({ message: "Supplier deactivated" });
+
+  return res.json({ message: "Supplier deactivated" });
 };

@@ -1,22 +1,22 @@
-const Supplier = require("../models/Supplier");
-const PurchaseInvoice = require("../models/PurchaseInvoice");
+import Vendor from "../models/Vendor";
+import SalesInvoice from "../models/SalesInvoice";
 
-exports.getSupplierAgeing = async (req, res) => {
+export const getVendorAgeing = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const today = new Date();
 
-    const suppliers = await Supplier.find({
+    const vendors = await Vendor.find({
       companyId,
       isActive: true,
     });
 
     const report = [];
 
-    for (const supplier of suppliers) {
-      const invoices = await PurchaseInvoice.find({
+    for (const vendor of vendors) {
+      const invoices = await SalesInvoice.find({
         companyId,
-        supplierId: supplier._id,
+        vendorId: vendor._id,
         status: { $ne: "PAID" },
       });
 
@@ -25,9 +25,8 @@ exports.getSupplierAgeing = async (req, res) => {
       let bucket90 = 0;
 
       invoices.forEach((inv) => {
-        const days = Math.floor(
-          (today - new Date(inv.invoiceDate)) / (1000 * 60 * 60 * 24),
-        );
+        const days =
+          (today - new Date(inv.invoiceDate)) / (1000 * 60 * 60 * 24);
 
         const outstanding = (inv.totalAmount || 0) - (inv.paidAmount || 0);
 
@@ -42,8 +41,8 @@ exports.getSupplierAgeing = async (req, res) => {
 
       if (total > 0) {
         report.push({
-          supplierId: supplier._id,
-          name: supplier.name,
+          vendorId: vendor._id,
+          name: vendor.name,
           "0_30": bucket30,
           "31_60": bucket60,
           "61_plus": bucket90,
@@ -52,8 +51,8 @@ exports.getSupplierAgeing = async (req, res) => {
       }
     }
 
-    res.json(report);
+    return res.json(report);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };

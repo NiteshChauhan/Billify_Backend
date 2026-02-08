@@ -1,39 +1,47 @@
-const Vendor = require("../models/Vendor");
+import Vendor from "../models/Vendor";
 
-exports.createVendor = async (req, res) => {
+export const createVendor = async (req, res) => {
   try {
     const vendor = await Vendor.create({
       companyId: req.user.companyId,
       ...req.body,
-      balance: req.body.openingBalance || 0
+      balance: req.body.openingBalance || 0,
     });
-    res.json(vendor);
+
+    return res.json(vendor);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 };
 
-exports.getVendors = async (req, res) => {
+export const getVendors = async (req, res) => {
   const vendors = await Vendor.find({
     companyId: req.user.companyId,
-    isActive: true
+    isActive: true,
   });
-  res.json(vendors);
+
+  return res.json(vendors);
 };
 
-exports.updateVendor = async (req, res) => {
+export const updateVendor = async (req, res) => {
+  const { id } = req.query;
+
   const vendor = await Vendor.findOneAndUpdate(
-    { _id: req.params.id, companyId: req.user.companyId },
+    { _id: id, companyId: req.user.companyId },
     req.body,
-    { new: true }
+    { new: true },
   );
-  res.json(vendor);
+
+  return res.json(vendor);
 };
 
-exports.deleteVendor = async (req, res) => {
+export const deleteVendor = async (req, res) => {
+  const { id } = req.query;
+
   await Vendor.findOneAndUpdate(
-    { _id: req.params.id, companyId: req.user.companyId },
-    { isActive: false }
+    { _id: id, companyId: req.user.companyId },
+    { isActive: false },
   );
-  res.json({ message: "Vendor deactivated" });
+
+  return res.json({ message: "Vendor deactivated" });
 };
