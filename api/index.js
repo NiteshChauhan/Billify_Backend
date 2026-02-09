@@ -1,28 +1,28 @@
 const express = require("express");
 const cors = require("cors");
+const mongoose = require("../src/lib/db"); // ✅ DB initialized once
 
 const app = express();
 
-/* ================= CORS CONFIG ================= */
-const corsOptions = {
-  origin: [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "https://vue-frontend-indol.vercel.app",
-  ],
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-};
+/* ================= CORS ================= */
+app.use(
+  cors({
+    origin: true, // allow all origins (safe for APIs)
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
-/* MUST be before routes */
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions)); // 🔥 VERY IMPORTANT
+/* ================= MIDDLEWARES ================= */
 app.use(express.json());
 
 /* ================= HEALTH CHECK ================= */
-app.get("/", (req, res) => {
-  res.send("Billing SaaS API Running");
+app.get("/api", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    message: "Billing SaaS API Running",
+  });
 });
 
 /* ================= ROUTES ================= */
@@ -42,10 +42,18 @@ app.use("/api/supplier-ledger", require("../src/routes/supplierLedgerRoutes"));
 app.use("/api/profit", require("../src/routes/profitRoutes"));
 app.use("/api/dashboard", require("../src/routes/dashboardRoutes"));
 
-/* ================= FALLBACK ================= */
+/* ================= 404 HANDLER ================= */
+app.use("/api/*", (req, res) => {
+  res.status(404).json({ error: "API route not found" });
+});
+
+/* ================= ERROR HANDLER ================= */
 app.use((err, req, res, next) => {
-  console.error("Unhandled Error:", err);
-  res.status(500).json({ error: "Internal Server Error" });
+  console.error("🔥 API Error:", err);
+  res.status(500).json({
+    error: "Internal Server Error",
+    message: err.message,
+  });
 });
 
 module.exports = app;
