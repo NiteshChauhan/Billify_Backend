@@ -1,67 +1,51 @@
 const express = require("express");
 const cors = require("cors");
-const connectDB = require("../src/db");
 
 const app = express();
 
-/* ---------------- MIDDLEWARES ---------------- */
-app.use(cors());
+/* ================= CORS CONFIG ================= */
+const corsOptions = {
+  origin: [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://vue-frontend-indol.vercel.app",
+  ],
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+};
+
+/* MUST be before routes */
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions)); // 🔥 VERY IMPORTANT
 app.use(express.json());
 
-/* ---------------- DB CONNECTION ---------------- */
-connectDB()
-  .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.error("MongoDB Error:", err));
-
-/* ---------------- HEALTH CHECK ---------------- */
+/* ================= HEALTH CHECK ================= */
 app.get("/", (req, res) => {
   res.send("Billing SaaS API Running");
 });
 
-/* ---------------- ROUTES ---------------- */
-const authRoutes = require("../src/routes/authRoutes");
-app.use("/api/auth", authRoutes);
+/* ================= ROUTES ================= */
+app.use("/api/auth", require("../src/routes/authRoutes"));
+app.use("/api/products", require("../src/routes/productRoutes"));
+app.use("/api/suppliers", require("../src/routes/supplierRoutes"));
+app.use("/api/vendors", require("../src/routes/vendorRoutes"));
+app.use("/api/stock", require("../src/routes/stockRoutes"));
+app.use("/api/opening-stock", require("../src/routes/openingStockRoutes"));
+app.use("/api/purchase", require("../src/routes/purchaseRoutes"));
+app.use("/api/sales", require("../src/routes/salesRoutes"));
+app.use("/api/payments", require("../src/routes/paymentRoutes"));
+app.use("/api/reports", require("../src/routes/reportRoutes"));
+app.use("/api/invoice-pdf", require("../src/routes/invoicePdfRoutes"));
+app.use("/api/stock-ledger", require("../src/routes/stockLedgerRoutes"));
+app.use("/api/supplier-ledger", require("../src/routes/supplierLedgerRoutes"));
+app.use("/api/profit", require("../src/routes/profitRoutes"));
+app.use("/api/dashboard", require("../src/routes/dashboardRoutes"));
 
-const productRoutes = require("../src/routes/productRoutes");
-app.use("/api/products", productRoutes);
-
-const supplierRoutes = require("../src/routes/supplierRoutes");
-app.use("/api/suppliers", supplierRoutes);
-
-const vendorRoutes = require("../src/routes/vendorRoutes");
-app.use("/api/vendors", vendorRoutes);
-
-const stockRoutes = require("../src/routes/stockRoutes");
-app.use("/api/stock", stockRoutes);
-
-const openingStockRoutes = require("../src/routes/openingStockRoutes");
-app.use("/api/opening-stock", openingStockRoutes);
-
-const purchaseRoutes = require("../src/routes/purchaseRoutes");
-app.use("/api/purchase", purchaseRoutes);
-
-const salesRoutes = require("../src/routes/salesRoutes");
-app.use("/api/sales", salesRoutes);
-
-const paymentRoutes = require("../src/routes/paymentRoutes");
-app.use("/api/payments", paymentRoutes);
-
-const reportRoutes = require("../src/routes/reportRoutes");
-app.use("/api/reports", reportRoutes);
-
-const invoicePdfRoutes = require("../src/routes/invoicePdfRoutes");
-app.use("/api/invoice-pdf", invoicePdfRoutes);
-
-const stockLedgerRoutes = require("../src/routes/stockLedgerRoutes");
-app.use("/api/stock-ledger", stockLedgerRoutes);
-
-const supplierLedgerRoutes = require("../src/routes/supplierLedgerRoutes");
-app.use("/api/supplier-ledger", supplierLedgerRoutes);
-
-const profitRoutes = require("../src/routes/profitRoutes");
-app.use("/api/profit", profitRoutes);
-
-const dashboardRoutes = require("../src/routes/dashboardRoutes");
-app.use("/api/dashboard", dashboardRoutes);
+/* ================= FALLBACK ================= */
+app.use((err, req, res, next) => {
+  console.error("Unhandled Error:", err);
+  res.status(500).json({ error: "Internal Server Error" });
+});
 
 module.exports = app;
