@@ -27,21 +27,21 @@ app.get("/", (req, res) => {
 });
 
 /* ================= ROUTES ================= */
-app.use("/auth", require("../src/routes/authRoutes"));
-app.use("/products", require("../src/routes/productRoutes"));
-app.use("/suppliers", require("../src/routes/supplierRoutes"));
-app.use("/vendors", require("../src/routes/vendorRoutes"));
-app.use("/stock", require("../src/routes/stockRoutes"));
-app.use("/opening-stock", require("../src/routes/openingStockRoutes"));
-app.use("/purchase", require("../src/routes/purchaseRoutes"));
-app.use("/sales", require("../src/routes/salesRoutes"));
-app.use("/payments", require("../src/routes/paymentRoutes"));
-app.use("/reports", require("../src/routes/reportRoutes"));
-app.use("/invoice-pdf", require("../src/routes/invoicePdfRoutes"));
-app.use("/stock-ledger", require("../src/routes/stockLedgerRoutes"));
-app.use("/supplier-ledger", require("../src/routes/supplierLedgerRoutes"));
-app.use("/profit", require("../src/routes/profitRoutes"));
-app.use("/dashboard", require("../src/routes/dashboardRoutes"));
+app.use("/api/auth", require("../src/routes/authRoutes"));
+app.use("/api/products", require("../src/routes/productRoutes"));
+app.use("/api/suppliers", require("../src/routes/supplierRoutes"));
+app.use("/api/vendors", require("../src/routes/vendorRoutes"));
+app.use("/api/stock", require("../src/routes/stockRoutes"));
+app.use("/api/opening-stock", require("../src/routes/openingStockRoutes"));
+app.use("/api/purchase", require("../src/routes/purchaseRoutes"));
+app.use("/api/sales", require("../src/routes/salesRoutes"));
+app.use("/api/payments", require("../src/routes/paymentRoutes"));
+app.use("/api/reports", require("../src/routes/reportRoutes"));
+app.use("/api/invoice-pdf", require("../src/routes/invoicePdfRoutes"));
+app.use("/api/stock-ledger", require("../src/routes/stockLedgerRoutes"));
+app.use("/api/supplier-ledger", require("../src/routes/supplierLedgerRoutes"));
+app.use("/api/profit", require("../src/routes/profitRoutes"));
+app.use("/api/dashboard", require("../src/routes/dashboardRoutes"));
 
 /* ================= 404 ================= */
 app.use((req, res) => {
