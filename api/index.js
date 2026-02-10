@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-require("../src/lib/db"); // DB init once
+const connectDB = require("../src/lib/db");
 
 const app = express();
 
@@ -9,17 +9,24 @@ app.use(
   cors({
     origin: ["http://localhost:5173", "https://vue-frontend-indol.vercel.app"],
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
 
-/* ================= BODY ================= */
 app.use(express.json());
+
+/* ================= DB INIT (🔥 REQUIRED) ================= */
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
 
 /* ================= HEALTH ================= */
 app.get("/", (req, res) => {
-  res.status(200).json({
+  res.json({
     status: "ok",
     service: "Billing SaaS API",
     env: process.env.NODE_ENV || "production",
@@ -52,8 +59,7 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("🔥 API Error:", err);
   res.status(500).json({
-    error: "Internal Server Error",
-    message: err.message,
+    error: err.message || "Internal Server Error",
   });
 });
 
