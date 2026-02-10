@@ -19,7 +19,11 @@ app.use(express.json());
 
 /* ================= HEALTH ================= */
 app.get("/", (req, res) => {
-  res.status(200).json({ message: "Billing SaaS API Running" });
+  res.status(200).json({
+    status: "ok",
+    service: "Billing SaaS API",
+    env: process.env.NODE_ENV || "production",
+  });
 });
 
 /* ================= ROUTES ================= */
