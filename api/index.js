@@ -1,28 +1,25 @@
 const express = require("express");
 const cors = require("cors");
-const mongoose = require("../src/lib/db"); // ✅ DB initialized once
+require("../src/lib/db"); // ✅ ensure DB initialized once
 
 const app = express();
 
 /* ================= CORS ================= */
 app.use(
   cors({
-    origin: true, // allow all origins (safe for APIs)
+    origin: true, // allow all origins
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   }),
 );
 
-/* ================= MIDDLEWARES ================= */
+/* ================= BODY ================= */
 app.use(express.json());
 
-/* ================= HEALTH CHECK ================= */
+/* ================= HEALTH ================= */
 app.get("/api", (req, res) => {
-  res.status(200).json({
-    status: "ok",
-    message: "Billing SaaS API Running",
-  });
+  res.status(200).json({ message: "Billing SaaS API Running" });
 });
 
 /* ================= ROUTES ================= */
@@ -42,9 +39,9 @@ app.use("/api/supplier-ledger", require("../src/routes/supplierLedgerRoutes"));
 app.use("/api/profit", require("../src/routes/profitRoutes"));
 app.use("/api/dashboard", require("../src/routes/dashboardRoutes"));
 
-/* ================= 404 HANDLER ================= */
-app.use("/api/*", (req, res) => {
-  res.status(404).json({ error: "API route not found" });
+/* ================= SAFE 404 ================= */
+app.use((req, res) => {
+  res.status(404).json({ error: "Route not found" });
 });
 
 /* ================= ERROR HANDLER ================= */
