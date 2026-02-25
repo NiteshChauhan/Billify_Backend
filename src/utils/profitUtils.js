@@ -1,6 +1,7 @@
 const StockLedger = require("../models/StockLedger");
 
 exports.getProfitSummary = async (companyId, fromDate, toDate) => {
+
   // 1️⃣ Fetch all SALES in range
   const sales = await StockLedger.find({
     companyId,
@@ -12,22 +13,24 @@ exports.getProfitSummary = async (companyId, fromDate, toDate) => {
   let totalCost = 0;
 
   for (const sale of sales) {
-    // 2️⃣ Purchases till sale date (FIFO-ish avg cost)
-    const purchases = await StockLedger.find({
+
+    // 2️⃣ Fetch all PURCHASE + OPENING till sale date
+    const stockEntries = await StockLedger.find({
       companyId,
       productId: sale.productId,
-      type: "PURCHASE",
+      type: { $in: ["PURCHASE", "OPENING"] },
       createdAt: { $lte: sale.createdAt },
     });
 
-    const totalQty = purchases.reduce(
-      (sum, p) => sum + Number(p.quantity || 0),
-      0,
+    const totalQty = stockEntries.reduce(
+      (sum, entry) => sum + Number(entry.quantity || 0),
+      0
     );
 
-    const totalValue = purchases.reduce(
-      (sum, p) => sum + Number(p.quantity || 0) * Number(p.rate || 0),
-      0,
+    const totalValue = stockEntries.reduce(
+      (sum, entry) =>
+        sum + Number(entry.quantity || 0) * Number(entry.rate || 0),
+      0
     );
 
     const avgCost = totalQty > 0 ? totalValue / totalQty : 0;
