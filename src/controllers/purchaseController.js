@@ -136,3 +136,142 @@ exports.getPurchaseById = async (req, res) => {
 
   res.json(invoice);
 };
+
+
+/* ================= UPDATE PURCHASE INVOICE ================= */
+exports.updatePurchaseInvoice = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      supplierId,
+      items,
+      tax = 0,
+      paidAmount = 0,
+      invoiceDate
+    } = req.body;
+
+    const invoice = await PurchaseInvoice.findById(id);
+
+    if (!invoice) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+
+    /* ❌ ALLOW EDIT ONLY SAME DAY */
+    const today = new Date().toISOString().slice(0, 10);
+    const invoiceDay = new Date(invoice.invoiceDate)
+      .toISOString()
+      .slice(0, 10);
+
+    if (today !== invoiceDay) {
+      return res.status(400).json({
+        message: "Invoice can only be edited on the same day"
+      });
+    }
+
+    /* ================= REVERSE OLD DATA ================= */
+
+    // 1️⃣ Reverse supplier balance
+    const oldSupplier = await Supplier.findById(invoice.supplierId);
+    oldSupplier.balance -= (invoice.totalAmount - invoice.paidAmount);
+    await oldSupplier.save();
+
+    // 2️⃣ Delete old stock ledger entries
+    await StockLedger.deleteMany({
+      referenceId: invoice._id,
+      referenceType: "PURCHASE_INVOICE"
+    });
+
+    // 3️⃣ Delete old payments
+    await Payment.deleteMany({
+      invoiceId: invoice._id,
+      invoiceType: "PURCHASE"
+    });
+
+    /* ================= RECALCULATE NEW DATA ================= */
+
+    let subtotal = 0;
+    items.forEach(i => {
+      if (!i.productId || !i.quantity || !i.rate) {
+        throw new Error("Invalid item data");
+      }
+      i.amount = i.quantity * i.rate;
+      subtotal += i.amount;
+    });
+
+    const totalAmount = subtotal + tax;
+
+    if (paidAmount > totalAmount) {
+      return res.status(400).json({
+        message: "Paid amount cannot exceed invoice total"
+      });
+    }
+
+    /* ================= UPDATE INVOICE ================= */
+
+    invoice.supplierId = supplierId;
+    invoice.items = items;
+    invoice.subtotal = subtotal;
+    invoice.tax = tax;
+    invoice.totalAmount = totalAmount;
+    invoice.invoiceDate = invoiceDate;
+
+    /* ================= ADD STOCK AGAIN ================= */
+
+    for (const item of items) {
+      await StockLedger.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        type: "PURCHASE",
+        quantity: item.quantity,
+        rate: item.rate,
+        referenceType: "PURCHASE_INVOICE",
+        referenceId: invoice._id
+      });
+    }
+
+    /* ================= HANDLE PAYMENT ================= */
+
+    let finalPaidAmount = 0;
+
+    if (paidAmount > 0) {
+      await Payment.create({
+        companyId: req.user.companyId,
+        partyType: "SUPPLIER",
+        partyId: supplierId,
+        invoiceType: "PURCHASE",
+        invoiceId: invoice._id,
+        amount: paidAmount,
+        paymentMode: "CASH",
+        remarks: "Payment updated during invoice edit"
+      });
+
+      finalPaidAmount = paidAmount;
+    }
+
+    invoice.paidAmount = finalPaidAmount;
+    invoice.status =
+      finalPaidAmount === totalAmount
+        ? "PAID"
+        : finalPaidAmount > 0
+        ? "PARTIAL"
+        : "DUE";
+
+    await invoice.save();
+
+    /* ================= UPDATE SUPPLIER BALANCE AGAIN ================= */
+
+    const newSupplier = await Supplier.findById(supplierId);
+    newSupplier.balance =
+      (newSupplier.balance || 0) + (totalAmount - finalPaidAmount);
+
+    await newSupplier.save();
+
+    res.json(invoice);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      message: "Failed to update purchase invoice",
+      error: err.message
+    });
+  }
+};

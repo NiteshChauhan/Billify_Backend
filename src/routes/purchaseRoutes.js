@@ -8,6 +8,7 @@ router.use(auth);
 router.post("/", purchaseController.createPurchaseInvoice);
 router.get("/", purchaseController.getPurchases);
 router.get("/:id", purchaseController.getPurchaseById);
+router.put("/:id", purchaseController.updatePurchaseInvoice);
 
 
 module.exports = router;
