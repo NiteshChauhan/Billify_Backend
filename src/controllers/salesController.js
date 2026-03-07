@@ -1,15 +1,47 @@
 const SalesInvoice = require("../models/SalesInvoice");
 const StockLedger = require("../models/StockLedger");
-const Vendor = require("../models/Vendor");
+const Party = require("../models/Party");
 const { validateStockForSale } = require("../utils/stockValidation");
+const { getDateRangeFromQuery } = require("../utils/dateRange");
+
+const toSalesResponse = (invoiceDoc) => {
+  const invoice = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
+  return {
+    ...invoice,
+    vendorId: invoice.partyId,
+    customerId: invoice.partyId,
+  };
+};
 
 /* ================= CREATE SALES INVOICE ================= */
 exports.createSalesInvoice = async (req, res) => {
   try {
-    const { vendorId, items, tax = 0, paidAmount = 0, invoiceDate } = req.body;
+    const {
+      partyId: bodyPartyId,
+      vendorId,
+      customerId,
+      items,
+      tax = 0,
+      paidAmount = 0,
+      invoiceDate,
+    } = req.body;
+    const partyId = bodyPartyId || customerId || vendorId;
 
-    if (!vendorId || !items || items.length === 0) {
-      return res.status(400).json({ message: "Vendor & items required" });
+    if (!partyId || !items || items.length === 0) {
+      return res.status(400).json({ message: "Customer & items required" });
+    }
+
+    /* 🔎 Validate Party is Vendor (Customer) */
+    const party = await Party.findOne({
+      _id: partyId,
+      companyId: req.user.companyId,
+      roles: { $in: ["customer", "vendor"] },
+    });
+
+    if (!party) {
+      return res.status(400).json({
+        message: "Invalid customer party",
+      });
     }
 
     // 1️⃣ Validate stock
@@ -27,25 +59,31 @@ exports.createSalesInvoice = async (req, res) => {
 
     const totalAmount = subtotal + tax;
 
+    if (paidAmount > totalAmount) {
+      return res.status(400).json({
+        message: "Paid amount cannot exceed invoice total",
+      });
+    }
+
     // 3️⃣ Auto Invoice No
     const count = await SalesInvoice.countDocuments({
       companyId: req.user.companyId,
     });
+
     const invoiceNo = `SAL-${count + 1}`;
 
     // 4️⃣ Create invoice
     const invoice = await SalesInvoice.create({
       companyId: req.user.companyId,
-      vendorId,
+      partyId,
       invoiceNo,
       invoiceDate,
       items,
       subtotal,
       tax,
       totalAmount,
-      paidAmount,
-      status:
-        paidAmount >= totalAmount ? "PAID" : paidAmount > 0 ? "PARTIAL" : "DUE",
+      paidAmount: 0,
+      status: "DUE",
     });
 
     // 5️⃣ Stock Ledger (SALE)
@@ -61,41 +99,73 @@ exports.createSalesInvoice = async (req, res) => {
       });
     }
 
-    // 6️⃣ Update vendor balance
-    const vendor = await Vendor.findById(vendorId);
-    vendor.balance += totalAmount - paidAmount;
-    await vendor.save();
+    /* ================= HANDLE INITIAL PAYMENT ================= */
+    let finalPaidAmount = 0;
 
-    res.json(invoice);
+    if (paidAmount > 0) {
+      finalPaidAmount = paidAmount;
+    }
+
+    invoice.paidAmount = finalPaidAmount;
+    invoice.status =
+      finalPaidAmount >= totalAmount
+        ? "PAID"
+        : finalPaidAmount > 0
+          ? "PARTIAL"
+          : "DUE";
+
+    await invoice.save();
+
+    /* ================= UPDATE PARTY BALANCE ================= */
+    party.balance = party.balance || 0;
+    party.balance += totalAmount - finalPaidAmount;
+    await party.save();
+
+    res.json(toSalesResponse(invoice));
   } catch (err) {
+    console.error(err);
     res.status(400).json({ error: err.message });
   }
 };
 
 /* ================= GET SALES LIST ================= */
 exports.getSales = async (req, res) => {
-  const data = await SalesInvoice.find({ companyId: req.user.companyId })
-    .populate("vendorId", "name")
+  const query = { companyId: req.user.companyId };
+  const dateRange = getDateRangeFromQuery(req.query);
+  if (dateRange) {
+    query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+  }
+
+  const data = await SalesInvoice.find(query)
+    .populate("partyId", "name")
     .sort({ createdAt: -1 });
 
-  res.json(data);
+  res.json(data.map(toSalesResponse));
 };
 
 /* ================= GET SALES BY ID ================= */
 exports.getSalesById = async (req, res) => {
   const invoice = await SalesInvoice.findById(req.params.id)
-    .populate("vendorId", "name")
+    .populate("partyId", "name")
     .populate("items.productId", "name");
 
-  res.json(invoice);
+  res.json(toSalesResponse(invoice));
 };
-
 
 /* ================= UPDATE SALES INVOICE ================= */
 exports.updateSalesInvoice = async (req, res) => {
   try {
     const { id } = req.params;
-    const { vendorId, items, tax = 0, paidAmount = 0, invoiceDate } = req.body;
+    const {
+      partyId: bodyPartyId,
+      vendorId,
+      customerId,
+      items,
+      tax = 0,
+      paidAmount = 0,
+      invoiceDate,
+    } = req.body;
+    const partyId = bodyPartyId || customerId || vendorId;
 
     const invoice = await SalesInvoice.findById(id);
 
@@ -105,9 +175,7 @@ exports.updateSalesInvoice = async (req, res) => {
 
     /* ❌ ALLOW EDIT ONLY SAME DAY */
     const today = new Date().toISOString().slice(0, 10);
-    const invoiceDay = new Date(invoice.invoiceDate)
-      .toISOString()
-      .slice(0, 10);
+    const invoiceDay = new Date(invoice.invoiceDate).toISOString().slice(0, 10);
 
     if (today !== invoiceDay) {
       return res.status(400).json({
@@ -117,19 +185,20 @@ exports.updateSalesInvoice = async (req, res) => {
 
     /* ================= REVERSE OLD DATA ================= */
 
-    // 1️⃣ Reverse Vendor Balance
-    const oldVendor = await Vendor.findById(invoice.vendorId);
-    oldVendor.balance -= (invoice.totalAmount - invoice.paidAmount);
-    await oldVendor.save();
+    // Reverse old party balance
+    const oldParty = await Party.findById(invoice.partyId);
+    if (oldParty) {
+      oldParty.balance -= invoice.totalAmount - invoice.paidAmount;
+      await oldParty.save();
+    }
 
-    // 2️⃣ Remove old stock ledger SALE entries
+    // Remove old stock ledger SALE entries
     await StockLedger.deleteMany({
       referenceId: invoice._id,
       referenceType: "SALES_INVOICE",
     });
 
     /* ================= VALIDATE STOCK AGAIN ================= */
-    // Important: After reversing stock, now validate new items
     await validateStockForSale(req.user.companyId, items);
 
     /* ================= RECALCULATE ================= */
@@ -153,7 +222,7 @@ exports.updateSalesInvoice = async (req, res) => {
 
     /* ================= UPDATE INVOICE ================= */
 
-    invoice.vendorId = vendorId;
+    invoice.partyId = partyId;
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = tax;
@@ -162,11 +231,7 @@ exports.updateSalesInvoice = async (req, res) => {
 
     invoice.paidAmount = paidAmount;
     invoice.status =
-      paidAmount >= totalAmount
-        ? "PAID"
-        : paidAmount > 0
-        ? "PARTIAL"
-        : "DUE";
+      paidAmount >= totalAmount ? "PAID" : paidAmount > 0 ? "PARTIAL" : "DUE";
 
     await invoice.save();
 
@@ -184,13 +249,15 @@ exports.updateSalesInvoice = async (req, res) => {
       });
     }
 
-    /* ================= UPDATE VENDOR BALANCE AGAIN ================= */
+    /* ================= UPDATE PARTY BALANCE AGAIN ================= */
 
-    const newVendor = await Vendor.findById(vendorId);
-    newVendor.balance += totalAmount - paidAmount;
-    await newVendor.save();
+    const newParty = await Party.findById(partyId);
+    if (newParty) {
+      newParty.balance = (newParty.balance || 0) + (totalAmount - paidAmount);
+      await newParty.save();
+    }
 
-    res.json(invoice);
+    res.json(toSalesResponse(invoice));
   } catch (err) {
     console.error(err);
     res.status(500).json({

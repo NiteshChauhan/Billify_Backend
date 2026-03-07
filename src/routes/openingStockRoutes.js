@@ -10,5 +10,6 @@ router.post("/", controller.addOpeningStock);
 
 /* CHECK OPENING STOCK */
 router.get("/:productId", controller.getOpeningStockByProduct);
+router.put("/:productId", controller.updateOpeningStock);
 
 module.exports = router;

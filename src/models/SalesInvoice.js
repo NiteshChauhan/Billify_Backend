@@ -1,42 +1,47 @@
 const mongoose = require("mongoose");
 
-const salesInvoiceSchema = new mongoose.Schema({
-  companyId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Company",
-    required: true
-  },
-  vendorId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: "Vendor",
-    required: true
-  },
+const salesInvoiceSchema = new mongoose.Schema(
+  {
+    companyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Company",
+      required: true,
+    },
 
-  invoiceNo: String,
-  invoiceDate: { type: Date, default: Date.now },
+    // 🔥 Changed from vendorId → partyId
+    partyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Party",
+      required: true,
+    },
 
-  items: [
-    {
-      productId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "Product"
+    invoiceNo: String,
+    invoiceDate: { type: Date, default: Date.now },
+
+    items: [
+      {
+        productId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Product",
+        },
+        quantity: Number,
+        rate: Number,
+        amount: Number,
       },
-      quantity: Number,
-      rate: Number,
-      amount: Number
-    }
-  ],
+    ],
 
-  subtotal: Number,
-  tax: Number,
-  totalAmount: Number,
+    subtotal: Number,
+    tax: Number,
+    totalAmount: Number,
 
-  paidAmount: { type: Number, default: 0 },
-  status: {
-    type: String,
-    enum: ["PAID", "PARTIAL", "DUE"],
-    default: "DUE"
-  }
-}, { timestamps: true });
+    paidAmount: { type: Number, default: 0 },
+    status: {
+      type: String,
+      enum: ["PAID", "PARTIAL", "DUE"],
+      default: "DUE",
+    },
+  },
+  { timestamps: true },
+);
 
 module.exports = mongoose.model("SalesInvoice", salesInvoiceSchema);

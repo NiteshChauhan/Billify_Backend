@@ -1,8 +1,9 @@
 const { getProfitSummary } = require("../utils/profitUtils");
+const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 exports.getProfit = async (req, res) => {
   try {
-    const { range, from, to } = req.query;
+    const { range, mode } = req.query;
     const companyId = req.user.companyId;
 
     const now = new Date();
@@ -10,12 +11,10 @@ exports.getProfit = async (req, res) => {
     let toDate = now;
 
     /* ---------- CUSTOM DATE RANGE ---------- */
-    if (from && to) {
-      fromDate = new Date(from);
-      toDate = new Date(to);
-
-      // Ensure end day includes full day
-      toDate.setHours(23, 59, 59, 999);
+    const explicitRange = getDateRangeFromQuery(req.query);
+    if (explicitRange) {
+      fromDate = explicitRange.fromDate;
+      toDate = explicitRange.toDate;
     } else {
 
     /* ---------- PREDEFINED RANGES ---------- */
@@ -50,6 +49,14 @@ exports.getProfit = async (req, res) => {
     }
 
     const result = await getProfitSummary(companyId, fromDate, toDate);
+
+    if (mode === "daily") {
+      return res.json({
+        from: fromDate,
+        to: toDate,
+        daily: result.daily || [],
+      });
+    }
 
     res.json(result);
   } catch (err) {

@@ -1,10 +1,11 @@
 const StockLedger = require("../models/StockLedger");
 const Product = require("../models/Product");
-const Supplier = require("../models/Supplier");
-const Vendor = require("../models/Vendor");
+const Party = require("../models/Party");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
+const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { getProfitSummary } = require("../utils/profitUtils");
 
 /* ================= STOCK REPORT ================= */
 exports.stockReport = async (req, res) => {
@@ -19,12 +20,25 @@ exports.stockReport = async (req, res) => {
           _id: "$productId",
           inQty: {
             $sum: {
-              $cond: [{ $eq: ["$type", "IN"] }, "$quantity", 0],
+              $cond: [
+                {
+                  $in: [
+                    "$type",
+                    ["PURCHASE", "OPENING", "ADJUSTMENT", "SALE_RETURN"],
+                  ],
+                },
+                "$quantity",
+                0,
+              ],
             },
           },
           outQty: {
             $sum: {
-              $cond: [{ $eq: ["$type", "OUT"] }, "$quantity", 0],
+              $cond: [
+                { $in: ["$type", ["SALE", "PURCHASE_RETURN"]] },
+                "$quantity",
+                0,
+              ],
             },
           },
         },
@@ -57,11 +71,12 @@ exports.stockReport = async (req, res) => {
   }
 };
 
-/* ================= SUPPLIER DUE ================= */
+/* ================= SUPPLIER DUE REPORT ================= */
 exports.supplierDueReport = async (req, res) => {
   try {
-    const suppliers = await Supplier.find({
+    const suppliers = await Party.find({
       companyId: req.user.companyId,
+      roles: "supplier",
     }).select("name balance");
 
     res.json(suppliers);
@@ -71,11 +86,12 @@ exports.supplierDueReport = async (req, res) => {
   }
 };
 
-/* ================= VENDOR DUE ================= */
+/* ================= VENDOR DUE REPORT ================= */
 exports.vendorDueReport = async (req, res) => {
   try {
-    const vendors = await Vendor.find({
+    const vendors = await Party.find({
       companyId: req.user.companyId,
+      roles: "vendor",
     }).select("name balance");
 
     res.json(vendors);
@@ -88,16 +104,14 @@ exports.vendorDueReport = async (req, res) => {
 /* ================= PURCHASE REPORT ================= */
 exports.purchaseReport = async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const query = { companyId: req.user.companyId };
+    const range = getDateRangeFromQuery(req.query);
+    if (range) {
+      query.invoiceDate = { $gte: range.fromDate, $lte: range.toDate };
+    }
 
-    const data = await PurchaseInvoice.find({
-      companyId: req.user.companyId,
-      invoiceDate: {
-        $gte: new Date(from),
-        $lte: new Date(to),
-      },
-    })
-      .populate("supplierId", "name")
+    const data = await PurchaseInvoice.find(query)
+      .populate("partyId", "name")
       .sort({ invoiceDate: -1 });
 
     res.json(data);
@@ -110,16 +124,14 @@ exports.purchaseReport = async (req, res) => {
 /* ================= SALES REPORT ================= */
 exports.salesReport = async (req, res) => {
   try {
-    const { from, to } = req.query;
+    const query = { companyId: req.user.companyId };
+    const range = getDateRangeFromQuery(req.query);
+    if (range) {
+      query.invoiceDate = { $gte: range.fromDate, $lte: range.toDate };
+    }
 
-    const data = await SalesInvoice.find({
-      companyId: req.user.companyId,
-      invoiceDate: {
-        $gte: new Date(from),
-        $lte: new Date(to),
-      },
-    })
-      .populate("vendorId", "name")
+    const data = await SalesInvoice.find(query)
+      .populate("partyId", "name")
       .sort({ invoiceDate: -1 });
 
     res.json(data);
@@ -133,24 +145,21 @@ exports.salesReport = async (req, res) => {
 exports.profitLossReport = async (req, res) => {
   try {
     const companyId = req.user.companyId;
+    const range = getDateRangeFromQuery(req.query);
 
-    const sales = await SalesInvoice.aggregate([
-      { $match: { companyId } },
-      { $group: { _id: null, totalSales: { $sum: "$totalAmount" } } },
-    ]);
-
-    const purchases = await PurchaseInvoice.aggregate([
-      { $match: { companyId } },
-      { $group: { _id: null, totalPurchase: { $sum: "$totalAmount" } } },
-    ]);
-
-    const totalSales = sales[0]?.totalSales || 0;
-    const totalPurchase = purchases[0]?.totalPurchase || 0;
+    const defaultFrom = new Date();
+    defaultFrom.setHours(0, 0, 0, 0);
+    const defaultTo = new Date();
+    const fromDate = range?.fromDate || defaultFrom;
+    const toDate = range?.toDate || defaultTo;
+    const summary = await getProfitSummary(companyId, fromDate, toDate);
 
     res.json({
-      totalSales,
-      totalPurchase,
-      profit: totalSales - totalPurchase,
+      totalSales: summary.sales,
+      totalPurchase: summary.cost,
+      profit: summary.profit,
+      cost: summary.cost,
+      daily: summary.daily || [],
     });
   } catch (err) {
     console.error("Profit Loss Error:", err);
@@ -161,16 +170,29 @@ exports.profitLossReport = async (req, res) => {
 /* ================= PARTY LEDGER ================= */
 exports.partyLedger = async (req, res) => {
   try {
-    const { partyType, partyId } = req.params;
+    const { partyId } = req.params;
+    const companyId = req.user.companyId;
 
-    const invoices =
-      partyType === "SUPPLIER"
-        ? await PurchaseInvoice.find({ supplierId: partyId })
-        : await SalesInvoice.find({ vendorId: partyId });
+    const purchaseInvoices = await PurchaseInvoice.find({
+      partyId,
+      companyId,
+    }).sort({ invoiceDate: -1 });
 
-    const payments = await Payment.find({ partyType, partyId });
+    const salesInvoices = await SalesInvoice.find({
+      partyId,
+      companyId,
+    }).sort({ invoiceDate: -1 });
 
-    res.json({ invoices, payments });
+    const payments = await Payment.find({
+      partyId,
+      companyId,
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      purchaseInvoices,
+      salesInvoices,
+      payments,
+    });
   } catch (err) {
     console.error("Party Ledger Error:", err);
     res.status(500).json({ error: "Failed to load party ledger" });

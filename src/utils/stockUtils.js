@@ -6,7 +6,7 @@ exports.getAvailableStock = async (companyId, productId) => {
   let stock = 0;
 
   entries.forEach(e => {
-    if (["PURCHASE", "OPENING"].includes(e.type)) {
+    if (["PURCHASE", "OPENING", "SALE_RETURN"].includes(e.type)) {
       stock += e.quantity;
     } else {
       stock -= e.quantity;

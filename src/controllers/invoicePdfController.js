@@ -1,30 +1,29 @@
-const SalesInvoice = require("../models/SalesInvoice");
+﻿const SalesInvoice = require("../models/SalesInvoice");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Company = require("../models/Company");
-const Vendor = require("../models/Vendor");
-const Supplier = require("../models/Supplier");
+const Party = require("../models/Party");
 const generatePDF = require("../services/pdfInvoiceService");
 
 exports.salesInvoicePDF = async (req, res) => {
-  const invoice = await SalesInvoice.findById(req.params.id);
+  const invoice = await SalesInvoice.findById(req.params.id).populate("items.productId", "name");
   if (!invoice) {
     return res.status(404).send("Invoice not found");
   }
 
   const company = await Company.findById(invoice.companyId);
-  const vendor = await Vendor.findById(invoice.vendorId);
+  const party = await Party.findById(invoice.partyId);
 
-  generatePDF(res, invoice, company, vendor, "SALE");
+  generatePDF(res, invoice, company, party, "SALE");
 };
 
 exports.purchaseInvoicePDF = async (req, res) => {
-  const invoice = await PurchaseInvoice.findById(req.params.id);
+  const invoice = await PurchaseInvoice.findById(req.params.id).populate("items.productId", "name");
   if (!invoice) {
     return res.status(404).send("Invoice not found");
   }
 
   const company = await Company.findById(invoice.companyId);
-  const supplier = await Supplier.findById(invoice.supplierId);
+  const party = await Party.findById(invoice.partyId);
 
-  generatePDF(res, invoice, company, supplier, "PURCHASE");
+  generatePDF(res, invoice, company, party, "PURCHASE");
 };

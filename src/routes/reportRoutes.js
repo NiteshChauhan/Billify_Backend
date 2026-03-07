@@ -1,17 +1,31 @@
 const router = require("express").Router();
 const auth = require("../middlewares/authMiddleware");
 const report = require("../controllers/reportController");
-const supplierOutstanding = require("../controllers/supplierOutstandingController");
+const partyOutstanding = require("../controllers/partyOutstandingController");
+const partyLedger = require("../controllers/partyLedgerController");
 
 router.use(auth);
 
+/* STOCK */
 router.get("/stock", report.stockReport);
-router.get("/supplier-due", report.supplierDueReport);
-router.get("/vendor-due", report.vendorDueReport);
+
+/* PURCHASE & SALES */
 router.get("/purchase", report.purchaseReport);
 router.get("/sales", report.salesReport);
+
+/* PROFIT & LOSS */
 router.get("/profit-loss", report.profitLossReport);
-router.get("/ledger/:partyType/:partyId", report.partyLedger);
-router.get("/supplier-outstanding", supplierOutstanding.getSupplierOutstanding);
+
+/* PARTY LEDGER */
+router.get("/ledger/:partyId", partyLedger.getPartyLedger);
+router.get("/ledger/:partyId/pdf", partyLedger.exportPartyLedgerPdf);
+
+/* OUTSTANDING */
+router.get("/outstanding/suppliers", partyOutstanding.getSupplierOutstanding);
+router.get("/outstanding/vendors", partyOutstanding.getVendorOutstanding);
+router.get("/outstanding/customers", partyOutstanding.getCustomerOutstanding);
+router.get("/outstanding/all", partyOutstanding.getAllOutstanding);
+router.get("/outstanding", partyOutstanding.getOutstandingByRole);
+router.get("/ageing", partyOutstanding.getAgeingByRole);
 
 module.exports = router;

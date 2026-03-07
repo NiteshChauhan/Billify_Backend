@@ -14,7 +14,14 @@ const stockLedgerSchema = new mongoose.Schema({
 
   type: {
     type: String,
-    enum: ["PURCHASE", "SALE", "OPENING", "ADJUSTMENT"],
+    enum: [
+      "PURCHASE",
+      "SALE",
+      "OPENING",
+      "ADJUSTMENT",
+      "PURCHASE_RETURN",
+      "SALE_RETURN",
+    ],
     required: true
   },
 

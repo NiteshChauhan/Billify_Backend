@@ -1,15 +1,14 @@
 const Payment = require("../models/Payment");
-const Supplier = require("../models/Supplier");
-const Vendor = require("../models/Vendor");
+const Party = require("../models/Party");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
+const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 /* ================= CREATE PAYMENT ================= */
 exports.createPayment = async (req, res) => {
   try {
     const {
-      partyType,
-      partyId,
+      partyId: bodyPartyId,
       invoiceType,
       invoiceId,
       amount,
@@ -23,7 +22,8 @@ exports.createPayment = async (req, res) => {
     }
 
     /* =====================================================
-       🟢 PURCHASE PAYMENT (Supplier)
+       🟢 PURCHASE PAYMENT (We pay Supplier)
+       Liability decreases
     ===================================================== */
     if (invoiceType === "PURCHASE") {
       const invoice = await PurchaseInvoice.findOne({
@@ -33,6 +33,11 @@ exports.createPayment = async (req, res) => {
 
       if (!invoice) {
         return res.status(404).json({ error: "Purchase invoice not found" });
+      }
+
+      const partyId = bodyPartyId || invoice.partyId?.toString();
+      if (!partyId) {
+        return res.status(400).json({ error: "partyId is required" });
       }
 
       const payments = await Payment.find({
@@ -52,19 +57,20 @@ exports.createPayment = async (req, res) => {
 
       const payment = await Payment.create({
         companyId: req.user.companyId,
-        partyType,
         partyId,
         invoiceType,
         invoiceId,
+        paymentType: "PAID",
         amount,
         paymentMode,
         referenceNo,
         remarks,
       });
 
-      const supplier = await Supplier.findById(partyId);
-      supplier.balance -= amount;
-      await supplier.save();
+      /* 🔄 UPDATE PARTY BALANCE */
+      const party = await Party.findById(partyId);
+      party.balance -= amount; // We paid supplier → liability reduced
+      await party.save();
 
       invoice.paidAmount = alreadyPaid + amount;
       invoice.status =
@@ -76,7 +82,8 @@ exports.createPayment = async (req, res) => {
     }
 
     /* =====================================================
-       🔵 SALES PAYMENT (Customer / Vendor)
+       🔵 SALES PAYMENT (Customer pays us)
+       Receivable decreases
     ===================================================== */
     if (invoiceType === "SALE") {
       const invoice = await SalesInvoice.findOne({
@@ -86,6 +93,11 @@ exports.createPayment = async (req, res) => {
 
       if (!invoice) {
         return res.status(404).json({ error: "Sales invoice not found" });
+      }
+
+      const partyId = bodyPartyId || invoice.partyId?.toString();
+      if (!partyId) {
+        return res.status(400).json({ error: "partyId is required" });
       }
 
       const payments = await Payment.find({
@@ -105,19 +117,20 @@ exports.createPayment = async (req, res) => {
 
       const payment = await Payment.create({
         companyId: req.user.companyId,
-        partyType,
         partyId,
         invoiceType,
         invoiceId,
+        paymentType: "RECEIVED",
         amount,
         paymentMode,
         referenceNo,
         remarks,
       });
 
-      const vendor = await Vendor.findById(partyId);
-      vendor.balance -= amount; // customer paid → receivable reduced
-      await vendor.save();
+      /* 🔄 UPDATE PARTY BALANCE */
+      const party = await Party.findById(partyId);
+      party.balance -= amount; // Customer paid → receivable reduced
+      await party.save();
 
       invoice.paidAmount = alreadyPaid + amount;
       invoice.status =
@@ -139,10 +152,31 @@ exports.createPayment = async (req, res) => {
 
 /* ================= GET PAYMENTS BY INVOICE ================= */
 exports.getPaymentsByInvoice = async (req, res) => {
-  const payments = await Payment.find({
+  const query = {
     companyId: req.user.companyId,
     invoiceId: req.params.invoiceId,
-  }).sort({ createdAt: 1 });
+  };
+  const dateRange = getDateRangeFromQuery(req.query);
+  if (dateRange) {
+    query.paymentDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+  }
+
+  const payments = await Payment.find(query).sort({ createdAt: 1 });
+
+  res.json(payments);
+};
+
+/* ================= GET PAYMENTS LIST ================= */
+exports.getPayments = async (req, res) => {
+  const query = { companyId: req.user.companyId };
+  const dateRange = getDateRangeFromQuery(req.query);
+  if (dateRange) {
+    query.paymentDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+  }
+
+  const payments = await Payment.find(query)
+    .populate("partyId", "name")
+    .sort({ paymentDate: -1, createdAt: -1 });
 
   res.json(payments);
 };

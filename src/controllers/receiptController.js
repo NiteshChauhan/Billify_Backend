@@ -1,16 +1,32 @@
 const Payment = require("../models/Payment");
-const Vendor = require("../models/Vendor");
+const Party = require("../models/Party");
 const SalesInvoice = require("../models/SalesInvoice");
 
 exports.createReceipt = async (req, res) => {
   try {
-    const { partyId, invoiceId, amount, paymentMode, referenceNo, remarks } =
+    const { partyId: bodyPartyId, invoiceId, amount, paymentMode, referenceNo, remarks } =
       req.body;
 
-    const invoice = await SalesInvoice.findById(invoiceId);
-    if (!invoice) throw new Error("Invoice not found");
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: "Invalid receipt amount" });
+    }
+
+    const invoice = await SalesInvoice.findOne({
+      _id: invoiceId,
+      companyId: req.user.companyId,
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ error: "Invoice not found" });
+    }
+
+    const partyId = bodyPartyId || invoice.partyId?.toString();
+    if (!partyId) {
+      return res.status(400).json({ error: "partyId is required" });
+    }
 
     const payments = await Payment.find({
+      companyId: req.user.companyId,
       invoiceType: "SALE",
       invoiceId,
     });
@@ -27,7 +43,6 @@ exports.createReceipt = async (req, res) => {
 
     const receipt = await Payment.create({
       companyId: req.user.companyId,
-      partyType: "VENDOR",
       partyId,
       invoiceType: "SALE",
       invoiceId,
@@ -49,10 +64,10 @@ exports.createReceipt = async (req, res) => {
 
     await invoice.save();
 
-    /* 🔄 UPDATE VENDOR BALANCE */
-    const vendor = await Vendor.findById(partyId);
-    vendor.balance -= amount;
-    await vendor.save();
+    /* 🔄 UPDATE PARTY BALANCE */
+    const party = await Party.findById(partyId);
+    party.balance -= amount; // receivable reduced
+    await party.save();
 
     res.json(receipt);
   } catch (err) {

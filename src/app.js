@@ -3,7 +3,32 @@ const cors = require("cors");
 
 const app = express();
 
-app.use(cors());
+const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const isLocalDevOrigin = (origin = "") =>
+  /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$/i.test(
+    origin,
+  );
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow non-browser clients (no Origin header)
+    if (!origin) return callback(null, true);
+    if (isLocalDevOrigin(origin)) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 
 app.get("/", (req, res) => {
@@ -16,11 +41,9 @@ app.use("/api/auth", authRoutes);
 const productRoutes = require("./routes/productRoutes");
 app.use("/api/products", productRoutes);
 
-const supplierRoutes = require("./routes/supplierRoutes");
-app.use("/api/suppliers", supplierRoutes);
-
-const vendorRoutes = require("./routes/vendorRoutes");
-app.use("/api/vendors", vendorRoutes);
+const partyRoutes = require("./routes/partyRoutes");
+app.use("/api/users", partyRoutes);
+app.use("/api/parties", partyRoutes);
 
 const stockRoutes = require("./routes/stockRoutes");
 app.use("/api/stock", stockRoutes);
@@ -37,6 +60,9 @@ app.use("/api/sales", salesRoutes);
 const paymentRoutes = require("./routes/paymentRoutes");
 app.use("/api/payments", paymentRoutes);
 
+const returnRoutes = require("./routes/returnRoutes");
+app.use("/api/returns", returnRoutes);
+
 const reportRoutes = require("./routes/reportRoutes");
 app.use("/api/reports", reportRoutes);
 
@@ -45,9 +71,6 @@ app.use("/api/invoice-pdf", invoicePdfRoutes);
 
 const stockLedgerRoutes = require("./routes/stockLedgerRoutes");
 app.use("/api/stock-ledger", stockLedgerRoutes);
-
-const supplierLedgerRoutes = require("./routes/supplierLedgerRoutes");
-app.use("/api/supplier-ledger", supplierLedgerRoutes);
 
 const profitRoutes = require("./routes/profitRoutes");
 app.use("/api/profit", profitRoutes);

@@ -1,27 +1,51 @@
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const StockLedger = require("../models/StockLedger");
-const Supplier = require("../models/Supplier");
+const Party = require("../models/Party");
 const Payment = require("../models/Payment");
+const { getDateRangeFromQuery } = require("../utils/dateRange");
+
+const toPurchaseResponse = (invoiceDoc) => {
+  const invoice = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
+  return {
+    ...invoice,
+    supplierId: invoice.partyId,
+  };
+};
 
 /* ================= CREATE PURCHASE INVOICE ================= */
 exports.createPurchaseInvoice = async (req, res) => {
   try {
     const {
+      partyId: bodyPartyId,
       supplierId,
       items,
       tax = 0,
       paidAmount = 0,
-      invoiceDate
+      invoiceDate,
     } = req.body;
+    const partyId = bodyPartyId || supplierId;
 
-    if (!supplierId || !items || items.length === 0) {
+    if (!partyId || !items || items.length === 0) {
       return res.status(400).json({
-        message: "Supplier and items are required"
+        message: "Party and items are required",
+      });
+    }
+
+    /* 🔎 Validate Party is Supplier */
+    const party = await Party.findOne({
+      _id: partyId,
+      companyId: req.user.companyId,
+      roles: "supplier",
+    });
+
+    if (!party) {
+      return res.status(400).json({
+        message: "Invalid supplier party",
       });
     }
 
     let subtotal = 0;
-    items.forEach(i => {
+    items.forEach((i) => {
       if (!i.productId || !i.quantity || !i.rate) {
         throw new Error("Invalid item data");
       }
@@ -33,21 +57,21 @@ exports.createPurchaseInvoice = async (req, res) => {
 
     if (paidAmount > totalAmount) {
       return res.status(400).json({
-        message: "Paid amount cannot exceed invoice total"
+        message: "Paid amount cannot exceed invoice total",
       });
     }
 
     /* 🔢 AUTO INVOICE NUMBER */
     const count = await PurchaseInvoice.countDocuments({
-      companyId: req.user.companyId
+      companyId: req.user.companyId,
     });
 
     const invoiceNo = `PUR-${count + 1}`;
 
-    /* ✅ CREATE INVOICE (paidAmount ALWAYS starts from 0) */
+    /* ✅ CREATE INVOICE */
     const invoice = await PurchaseInvoice.create({
       companyId: req.user.companyId,
-      supplierId,
+      partyId,
       invoiceNo,
       invoiceDate,
       items,
@@ -55,7 +79,7 @@ exports.createPurchaseInvoice = async (req, res) => {
       tax,
       totalAmount,
       paidAmount: 0,
-      status: "DUE"
+      status: "DUE",
     });
 
     /* 📦 STOCK LEDGER ENTRY */
@@ -67,7 +91,7 @@ exports.createPurchaseInvoice = async (req, res) => {
         quantity: item.quantity,
         rate: item.rate,
         referenceType: "PURCHASE_INVOICE",
-        referenceId: invoice._id
+        referenceId: invoice._id,
       });
     }
 
@@ -75,80 +99,82 @@ exports.createPurchaseInvoice = async (req, res) => {
     let finalPaidAmount = 0;
 
     if (paidAmount > 0) {
-      /* 🔹 Create payment entry */
       await Payment.create({
         companyId: req.user.companyId,
-        partyType: "SUPPLIER",
-        partyId: supplierId,
+        partyId,
         invoiceType: "PURCHASE",
         invoiceId: invoice._id,
         amount: paidAmount,
         paymentMode: "CASH",
-        remarks: "Payment at invoice creation"
+        remarks: "Payment at invoice creation",
       });
 
       finalPaidAmount = paidAmount;
     }
 
-    /* 🔄 UPDATE INVOICE PAID + STATUS */
+    /* 🔄 UPDATE INVOICE */
     invoice.paidAmount = finalPaidAmount;
     invoice.status =
       finalPaidAmount === totalAmount
         ? "PAID"
         : finalPaidAmount > 0
-        ? "PARTIAL"
-        : "DUE";
+          ? "PARTIAL"
+          : "DUE";
 
     await invoice.save();
 
-    /* 💰 UPDATE SUPPLIER BALANCE */
-    const supplier = await Supplier.findById(supplierId);
-    supplier.balance = supplier.balance || 0;
-    supplier.balance += totalAmount - finalPaidAmount;
-    await supplier.save();
+    /* 💰 UPDATE PARTY BALANCE */
+    party.balance = party.balance || 0;
+    party.balance += totalAmount - finalPaidAmount;
+    await party.save();
 
-    res.json(invoice);
+    res.json(toPurchaseResponse(invoice));
   } catch (err) {
     console.error(err);
     res.status(500).json({
       message: "Failed to create purchase invoice",
-      error: err.message
+      error: err.message,
     });
   }
 };
 
 /* ================= GET ALL PURCHASES ================= */
 exports.getPurchases = async (req, res) => {
-  const data = await PurchaseInvoice
-    .find({ companyId: req.user.companyId })
-    .populate("supplierId", "name")
+  const query = { companyId: req.user.companyId };
+  const dateRange = getDateRangeFromQuery(req.query);
+  if (dateRange) {
+    query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+  }
+
+  const data = await PurchaseInvoice.find(query)
+    .populate("partyId", "name")
     .sort({ createdAt: -1 });
 
-  res.json(data);
+  res.json(data.map(toPurchaseResponse));
 };
 
 /* ================= GET PURCHASE BY ID ================= */
 exports.getPurchaseById = async (req, res) => {
-  const invoice = await PurchaseInvoice
-    .findById(req.params.id)
-    .populate("supplierId", "name")
+  const invoice = await PurchaseInvoice.findById(req.params.id)
+    .populate("partyId", "name")
     .populate("items.productId", "name");
 
-  res.json(invoice);
+  res.json(toPurchaseResponse(invoice));
 };
-
 
 /* ================= UPDATE PURCHASE INVOICE ================= */
 exports.updatePurchaseInvoice = async (req, res) => {
   try {
     const { id } = req.params;
     const {
+      partyId: bodyPartyId,
       supplierId,
       items,
       tax = 0,
       paidAmount = 0,
-      invoiceDate
+      invoiceDate,
     } = req.body;
+    const partyId = bodyPartyId || supplierId;
 
     const invoice = await PurchaseInvoice.findById(id);
 
@@ -158,39 +184,39 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
     /* ❌ ALLOW EDIT ONLY SAME DAY */
     const today = new Date().toISOString().slice(0, 10);
-    const invoiceDay = new Date(invoice.invoiceDate)
-      .toISOString()
-      .slice(0, 10);
+    const invoiceDay = new Date(invoice.invoiceDate).toISOString().slice(0, 10);
 
     if (today !== invoiceDay) {
       return res.status(400).json({
-        message: "Invoice can only be edited on the same day"
+        message: "Invoice can only be edited on the same day",
       });
     }
 
     /* ================= REVERSE OLD DATA ================= */
 
-    // 1️⃣ Reverse supplier balance
-    const oldSupplier = await Supplier.findById(invoice.supplierId);
-    oldSupplier.balance -= (invoice.totalAmount - invoice.paidAmount);
-    await oldSupplier.save();
+    // Reverse old party balance
+    const oldParty = await Party.findById(invoice.partyId);
+    if (oldParty) {
+      oldParty.balance -= invoice.totalAmount - invoice.paidAmount;
+      await oldParty.save();
+    }
 
-    // 2️⃣ Delete old stock ledger entries
+    // Delete old stock
     await StockLedger.deleteMany({
       referenceId: invoice._id,
-      referenceType: "PURCHASE_INVOICE"
+      referenceType: "PURCHASE_INVOICE",
     });
 
-    // 3️⃣ Delete old payments
+    // Delete old payments
     await Payment.deleteMany({
       invoiceId: invoice._id,
-      invoiceType: "PURCHASE"
+      invoiceType: "PURCHASE",
     });
 
-    /* ================= RECALCULATE NEW DATA ================= */
+    /* ================= RECALCULATE ================= */
 
     let subtotal = 0;
-    items.forEach(i => {
+    items.forEach((i) => {
       if (!i.productId || !i.quantity || !i.rate) {
         throw new Error("Invalid item data");
       }
@@ -202,13 +228,11 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
     if (paidAmount > totalAmount) {
       return res.status(400).json({
-        message: "Paid amount cannot exceed invoice total"
+        message: "Paid amount cannot exceed invoice total",
       });
     }
 
-    /* ================= UPDATE INVOICE ================= */
-
-    invoice.supplierId = supplierId;
+    invoice.partyId = partyId;
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = tax;
@@ -216,7 +240,6 @@ exports.updatePurchaseInvoice = async (req, res) => {
     invoice.invoiceDate = invoiceDate;
 
     /* ================= ADD STOCK AGAIN ================= */
-
     for (const item of items) {
       await StockLedger.create({
         companyId: req.user.companyId,
@@ -225,7 +248,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
         quantity: item.quantity,
         rate: item.rate,
         referenceType: "PURCHASE_INVOICE",
-        referenceId: invoice._id
+        referenceId: invoice._id,
       });
     }
 
@@ -236,13 +259,12 @@ exports.updatePurchaseInvoice = async (req, res) => {
     if (paidAmount > 0) {
       await Payment.create({
         companyId: req.user.companyId,
-        partyType: "SUPPLIER",
-        partyId: supplierId,
+        partyId,
         invoiceType: "PURCHASE",
         invoiceId: invoice._id,
         amount: paidAmount,
         paymentMode: "CASH",
-        remarks: "Payment updated during invoice edit"
+        remarks: "Payment updated during invoice edit",
       });
 
       finalPaidAmount = paidAmount;
@@ -253,25 +275,26 @@ exports.updatePurchaseInvoice = async (req, res) => {
       finalPaidAmount === totalAmount
         ? "PAID"
         : finalPaidAmount > 0
-        ? "PARTIAL"
-        : "DUE";
+          ? "PARTIAL"
+          : "DUE";
 
     await invoice.save();
 
-    /* ================= UPDATE SUPPLIER BALANCE AGAIN ================= */
+    /* ================= UPDATE PARTY BALANCE AGAIN ================= */
 
-    const newSupplier = await Supplier.findById(supplierId);
-    newSupplier.balance =
-      (newSupplier.balance || 0) + (totalAmount - finalPaidAmount);
+    const newParty = await Party.findById(partyId);
+    if (newParty) {
+      newParty.balance =
+        (newParty.balance || 0) + (totalAmount - finalPaidAmount);
+      await newParty.save();
+    }
 
-    await newSupplier.save();
-
-    res.json(invoice);
+    res.json(toPurchaseResponse(invoice));
   } catch (err) {
     console.error(err);
     res.status(500).json({
       message: "Failed to update purchase invoice",
-      error: err.message
+      error: err.message,
     });
   }
 };
