@@ -26,6 +26,10 @@ const returnSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       required: true,
     },
+    returnNo: {
+      type: String,
+      trim: true,
+    },
     returnDate: {
       type: Date,
       default: Date.now,
@@ -49,4 +53,3 @@ const returnSchema = new mongoose.Schema(
 );
 
 module.exports = mongoose.model("Return", returnSchema);
-

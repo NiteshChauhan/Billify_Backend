@@ -8,6 +8,8 @@ const productSchema = new mongoose.Schema({
   },
   name: String,
   sku: String,
+  openingStock: { type: Number, default: 0 },
+  openingRate: { type: Number, default: 0 },
   attributes: Object,
   createdAt: { type: Date, default: Date.now }
 });

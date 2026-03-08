@@ -16,8 +16,13 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   const invoiceDateQuery = query ? { invoiceDate: query } : {};
   const paymentDateQuery = query ? { paymentDate: query } : {};
 
-  const includeSupplier = !role || role === "supplier";
-  const includeCustomer = !role || role === "customer" || role === "vendor";
+  const normalizedRole = String(role || "").toLowerCase();
+  const includeSupplier = !normalizedRole || normalizedRole === "all" || normalizedRole === "supplier";
+  const includeCustomer =
+    !normalizedRole ||
+    normalizedRole === "all" ||
+    normalizedRole === "customer" ||
+    normalizedRole === "vendor";
 
   const [purchases, sales, payments, returns] = await Promise.all([
     includeSupplier
@@ -41,12 +46,23 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   ]);
 
   const ledger = [];
+  const purchaseMap = {};
+  const salesMap = {};
+
+  purchases.forEach((p) => {
+    purchaseMap[String(p._id)] = p.invoiceNo || "-";
+  });
+
+  sales.forEach((s) => {
+    salesMap[String(s._id)] = s.invoiceNo || "-";
+  });
 
   purchases.forEach((p) => {
     ledger.push({
       date: p.invoiceDate,
-      type: "PURCHASE",
+      type: "Purchase",
       particulars: `Purchase Invoice ${p.invoiceNo}`,
+      billNumber: p.invoiceNo || "-",
       debit: p.totalAmount,
       credit: 0,
       billId: p._id,
@@ -58,8 +74,9 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   sales.forEach((s) => {
     ledger.push({
       date: s.invoiceDate,
-      type: "SALE",
+      type: "Sale",
       particulars: `Sales Invoice ${s.invoiceNo}`,
+      billNumber: s.invoiceNo || "-",
       debit: 0,
       credit: s.totalAmount,
       billId: s._id,
@@ -70,10 +87,15 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
 
   payments.forEach((p) => {
     const isReceived = p.paymentType === "RECEIVED" || p.invoiceType === "SALE";
+    const invoiceNo =
+      p.invoiceType === "PURCHASE"
+        ? purchaseMap[String(p.invoiceId)] || "-"
+        : salesMap[String(p.invoiceId)] || "-";
     ledger.push({
       date: p.paymentDate,
-      type: "PAYMENT",
+      type: "Payment",
       particulars: `Payment (${p.paymentMode})`,
+      billNumber: invoiceNo,
       debit: isReceived ? 0 : p.amount,
       credit: isReceived ? p.amount : 0,
       billId: p.invoiceId,
@@ -84,10 +106,14 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
 
   returns.forEach((r) => {
     const isSaleReturn = r.returnType === "SALE_RETURN";
+    const invoiceNo = isSaleReturn
+      ? salesMap[String(r.billId)] || "-"
+      : purchaseMap[String(r.billId)] || "-";
     ledger.push({
       date: r.returnDate,
-      type: r.returnType,
+      type: isSaleReturn ? "Sale Return" : "Purchase Return",
       particulars: isSaleReturn ? "Sale Return" : "Purchase Return",
+      billNumber: invoiceNo,
       debit: isSaleReturn ? 0 : r.totalAmount,
       credit: isSaleReturn ? r.totalAmount : 0,
       billId: r.billId,

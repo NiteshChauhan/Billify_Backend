@@ -7,6 +7,8 @@ const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http:/
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
+const normalizeOrigin = (origin = "") => String(origin || "").replace(/\/$/, "").toLowerCase();
+const normalizedAllowedOrigins = new Set(allowedOrigins.map((origin) => normalizeOrigin(origin)));
 
 const isLocalDevOrigin = (origin = "") =>
   /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$/i.test(
@@ -18,12 +20,21 @@ const corsOptions = {
     // Allow non-browser clients (no Origin header)
     if (!origin) return callback(null, true);
     if (isLocalDevOrigin(origin)) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (normalizedAllowedOrigins.has(normalizeOrigin(origin))) return callback(null, true);
+    if (process.env.NODE_ENV !== "production") return callback(null, true);
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+    "Cache-Control",
+    "Pragma",
+    "Expires",
+  ],
   optionsSuccessStatus: 204,
 };
 

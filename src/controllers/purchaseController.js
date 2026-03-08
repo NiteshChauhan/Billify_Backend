@@ -18,6 +18,7 @@ exports.createPurchaseInvoice = async (req, res) => {
     const {
       partyId: bodyPartyId,
       supplierId,
+      invoiceNo,
       items,
       tax = 0,
       paidAmount = 0,
@@ -31,7 +32,6 @@ exports.createPurchaseInvoice = async (req, res) => {
       });
     }
 
-    /* 🔎 Validate Party is Supplier */
     const party = await Party.findOne({
       _id: partyId,
       companyId: req.user.companyId,
@@ -61,18 +61,28 @@ exports.createPurchaseInvoice = async (req, res) => {
       });
     }
 
-    /* 🔢 AUTO INVOICE NUMBER */
-    const count = await PurchaseInvoice.countDocuments({
+    const normalizedInvoiceNo = String(invoiceNo || "").trim();
+    if (!normalizedInvoiceNo) {
+      return res.status(400).json({
+        message: "Purchase bill number is required",
+      });
+    }
+
+    const duplicateInvoice = await PurchaseInvoice.findOne({
       companyId: req.user.companyId,
-    });
+      invoiceNo: normalizedInvoiceNo,
+    }).select("_id");
 
-    const invoiceNo = `PUR-${count + 1}`;
+    if (duplicateInvoice) {
+      return res.status(400).json({
+        message: "Purchase bill number already exists",
+      });
+    }
 
-    /* ✅ CREATE INVOICE */
     const invoice = await PurchaseInvoice.create({
       companyId: req.user.companyId,
       partyId,
-      invoiceNo,
+      invoiceNo: normalizedInvoiceNo,
       invoiceDate,
       items,
       subtotal,
@@ -82,7 +92,6 @@ exports.createPurchaseInvoice = async (req, res) => {
       status: "DUE",
     });
 
-    /* 📦 STOCK LEDGER ENTRY */
     for (const item of items) {
       await StockLedger.create({
         companyId: req.user.companyId,
@@ -95,7 +104,6 @@ exports.createPurchaseInvoice = async (req, res) => {
       });
     }
 
-    /* ================= HANDLE INITIAL PAYMENT ================= */
     let finalPaidAmount = 0;
 
     if (paidAmount > 0) {
@@ -112,7 +120,6 @@ exports.createPurchaseInvoice = async (req, res) => {
       finalPaidAmount = paidAmount;
     }
 
-    /* 🔄 UPDATE INVOICE */
     invoice.paidAmount = finalPaidAmount;
     invoice.status =
       finalPaidAmount === totalAmount
@@ -123,7 +130,6 @@ exports.createPurchaseInvoice = async (req, res) => {
 
     await invoice.save();
 
-    /* 💰 UPDATE PARTY BALANCE */
     party.balance = party.balance || 0;
     party.balance += totalAmount - finalPaidAmount;
     await party.save();
@@ -169,6 +175,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     const {
       partyId: bodyPartyId,
       supplierId,
+      invoiceNo,
       items,
       tax = 0,
       paidAmount = 0,
@@ -182,7 +189,6 @@ exports.updatePurchaseInvoice = async (req, res) => {
       return res.status(404).json({ message: "Invoice not found" });
     }
 
-    /* ❌ ALLOW EDIT ONLY SAME DAY */
     const today = new Date().toISOString().slice(0, 10);
     const invoiceDay = new Date(invoice.invoiceDate).toISOString().slice(0, 10);
 
@@ -192,28 +198,21 @@ exports.updatePurchaseInvoice = async (req, res) => {
       });
     }
 
-    /* ================= REVERSE OLD DATA ================= */
-
-    // Reverse old party balance
     const oldParty = await Party.findById(invoice.partyId);
     if (oldParty) {
       oldParty.balance -= invoice.totalAmount - invoice.paidAmount;
       await oldParty.save();
     }
 
-    // Delete old stock
     await StockLedger.deleteMany({
       referenceId: invoice._id,
       referenceType: "PURCHASE_INVOICE",
     });
 
-    // Delete old payments
     await Payment.deleteMany({
       invoiceId: invoice._id,
       invoiceType: "PURCHASE",
     });
-
-    /* ================= RECALCULATE ================= */
 
     let subtotal = 0;
     items.forEach((i) => {
@@ -233,13 +232,29 @@ exports.updatePurchaseInvoice = async (req, res) => {
     }
 
     invoice.partyId = partyId;
+
+    const normalizedInvoiceNo = String(invoiceNo || invoice.invoiceNo || "").trim();
+    if (!normalizedInvoiceNo) {
+      return res.status(400).json({ message: "Purchase bill number is required" });
+    }
+
+    const duplicateInvoice = await PurchaseInvoice.findOne({
+      companyId: req.user.companyId,
+      invoiceNo: normalizedInvoiceNo,
+      _id: { $ne: invoice._id },
+    }).select("_id");
+
+    if (duplicateInvoice) {
+      return res.status(400).json({ message: "Purchase bill number already exists" });
+    }
+
+    invoice.invoiceNo = normalizedInvoiceNo;
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = tax;
     invoice.totalAmount = totalAmount;
     invoice.invoiceDate = invoiceDate;
 
-    /* ================= ADD STOCK AGAIN ================= */
     for (const item of items) {
       await StockLedger.create({
         companyId: req.user.companyId,
@@ -251,8 +266,6 @@ exports.updatePurchaseInvoice = async (req, res) => {
         referenceId: invoice._id,
       });
     }
-
-    /* ================= HANDLE PAYMENT ================= */
 
     let finalPaidAmount = 0;
 
@@ -279,8 +292,6 @@ exports.updatePurchaseInvoice = async (req, res) => {
           : "DUE";
 
     await invoice.save();
-
-    /* ================= UPDATE PARTY BALANCE AGAIN ================= */
 
     const newParty = await Party.findById(partyId);
     if (newParty) {

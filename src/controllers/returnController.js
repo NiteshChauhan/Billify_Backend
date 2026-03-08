@@ -6,6 +6,14 @@ const Party = require("../models/Party");
 const { getAvailableStock } = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
+const normalizeReturnType = (value = "") => {
+  const type = String(value).toUpperCase();
+  return type === "PURCHASE_RETURN" ? "PURCHASE_RETURN" : "SALE_RETURN";
+};
+
+const getBillModelByReturnType = (returnType) =>
+  returnType === "PURCHASE_RETURN" ? PurchaseInvoice : SalesInvoice;
+
 const validateItems = (items = []) => {
   if (!Array.isArray(items) || !items.length) {
     throw new Error("Return items are required");
@@ -73,6 +81,10 @@ exports.createSaleReturn = async (req, res) => {
           message: `Return qty exceeds sold qty for product ${item.productId}`,
         });
       }
+      if (!item.rate) {
+        item.rate = Number(soldItem.rate || 0);
+        item.amount = Number((item.quantity * item.rate).toFixed(2));
+      }
     }
 
     for (const item of items) {
@@ -88,6 +100,11 @@ exports.createSaleReturn = async (req, res) => {
     }
 
     const totalAmount = items.reduce((sum, item) => sum + item.amount, 0);
+    const saleReturnCount = await ReturnEntry.countDocuments({
+      companyId,
+      returnType: "SALE_RETURN",
+    });
+    const returnNo = `SR-${saleReturnCount + 1}`;
 
     const returnEntry = await ReturnEntry.create({
       companyId,
@@ -95,6 +112,7 @@ exports.createSaleReturn = async (req, res) => {
       returnType: "SALE_RETURN",
       billType: "SALE",
       billId: invoice._id,
+      returnNo,
       returnDate,
       items,
       totalAmount,
@@ -117,8 +135,23 @@ exports.createSaleReturn = async (req, res) => {
 
 exports.createPurchaseReturn = async (req, res) => {
   try {
-    const { billId, items, remarks, returnDate } = req.body;
+    const { billId, items, remarks, returnDate, returnNo } = req.body;
     const companyId = req.user.companyId;
+    const normalizedReturnNo = String(returnNo || "").trim();
+
+    if (!normalizedReturnNo) {
+      return res.status(400).json({ message: "Purchase return number is required" });
+    }
+
+    const duplicateReturnNo = await ReturnEntry.findOne({
+      companyId,
+      returnType: "PURCHASE_RETURN",
+      returnNo: normalizedReturnNo,
+    }).select("_id");
+
+    if (duplicateReturnNo) {
+      return res.status(400).json({ message: "Purchase return number already exists" });
+    }
 
     const invoice = await PurchaseInvoice.findOne({ _id: billId, companyId });
     if (!invoice) {
@@ -154,6 +187,10 @@ exports.createPurchaseReturn = async (req, res) => {
           message: `Return qty exceeds purchased qty for product ${item.productId}`,
         });
       }
+      if (!item.rate) {
+        item.rate = Number(purchasedItem.rate || 0);
+        item.amount = Number((item.quantity * item.rate).toFixed(2));
+      }
 
       const availableStock = await getAvailableStock(companyId, item.productId);
       if (availableStock < item.quantity) {
@@ -183,6 +220,7 @@ exports.createPurchaseReturn = async (req, res) => {
       returnType: "PURCHASE_RETURN",
       billType: "PURCHASE",
       billId: invoice._id,
+      returnNo: normalizedReturnNo,
       returnDate,
       items,
       totalAmount,
@@ -203,6 +241,106 @@ exports.createPurchaseReturn = async (req, res) => {
   }
 };
 
+exports.getReturnBills = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const returnType = normalizeReturnType(req.query.returnType || req.query.type);
+    const BillModel = getBillModelByReturnType(returnType);
+    const query = { companyId };
+
+    const dateRange = getDateRangeFromQuery(req.query);
+    if (dateRange) {
+      query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+    }
+
+    if (req.query.partyId) {
+      query.partyId = req.query.partyId;
+    }
+
+    const bills = await BillModel.find(query)
+      .populate("partyId", "name")
+      .sort({ invoiceDate: -1, createdAt: -1 })
+      .select("_id invoiceNo invoiceDate totalAmount paidAmount status partyId items");
+
+    res.json(
+      bills.map((bill) => ({
+        _id: bill._id,
+        invoiceNo: bill.invoiceNo,
+        invoiceDate: bill.invoiceDate,
+        totalAmount: bill.totalAmount,
+        paidAmount: bill.paidAmount,
+        status: bill.status,
+        partyId: bill.partyId,
+        itemCount: Array.isArray(bill.items) ? bill.items.length : 0,
+      })),
+    );
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.getReturnBillItems = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const returnType = normalizeReturnType(req.query.returnType || req.query.type);
+    const BillModel = getBillModelByReturnType(returnType);
+    const billType = returnType === "PURCHASE_RETURN" ? "PURCHASE" : "SALE";
+    const billId = req.params.billId;
+
+    const bill = await BillModel.findOne({ _id: billId, companyId })
+      .populate("partyId", "name")
+      .populate("items.productId", "name");
+
+    if (!bill) {
+      return res.status(404).json({ message: "Bill not found" });
+    }
+
+    const previousReturns = await ReturnEntry.find({
+      companyId,
+      billType,
+      billId,
+    }).select("items.productId items.quantity");
+
+    const returnedMap = {};
+    previousReturns.forEach((entry) => {
+      entry.items.forEach((item) => {
+        const key = String(item.productId);
+        returnedMap[key] = (returnedMap[key] || 0) + Number(item.quantity || 0);
+      });
+    });
+
+    const items = (bill.items || []).map((item) => {
+      const productId = item.productId?._id || item.productId;
+      const originalQty = Number(item.quantity || 0);
+      const returnedQty = Number(returnedMap[String(productId)] || 0);
+      const remainingQty = Math.max(0, originalQty - returnedQty);
+      return {
+        productId,
+        productName: item.productId?.name || "Unknown Product",
+        rate: Number(item.rate || 0),
+        originalQty,
+        returnedQty,
+        remainingQty,
+      };
+    });
+
+    res.json({
+      bill: {
+        _id: bill._id,
+        invoiceNo: bill.invoiceNo,
+        invoiceDate: bill.invoiceDate,
+        totalAmount: bill.totalAmount,
+        paidAmount: bill.paidAmount,
+        status: bill.status,
+        partyId: bill.partyId,
+      },
+      items,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+};
+
 exports.getReturns = async (req, res) => {
   const query = { companyId: req.user.companyId };
   if (req.query.billId) query.billId = req.query.billId;
@@ -219,4 +357,3 @@ exports.getReturns = async (req, res) => {
 
   res.json(data);
 };
-

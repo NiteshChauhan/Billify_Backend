@@ -7,10 +7,8 @@ router.use(auth);
 
 router.post("/", productController.createProduct);
 router.get("/", productController.getProducts);
-
-/* ✅ ADD THIS */
+router.get("/:id/history", productController.getProductHistory);
 router.get("/:id", productController.getProductById);
-
 router.put("/:id", productController.updateProduct);
 router.delete("/:id", productController.deleteProduct);
 

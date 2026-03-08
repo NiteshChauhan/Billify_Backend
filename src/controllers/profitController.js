@@ -48,13 +48,27 @@ exports.getProfit = async (req, res) => {
       }
     }
 
-    const result = await getProfitSummary(companyId, fromDate, toDate);
+    const includeEntries = mode === "entries";
+    const result = await getProfitSummary(companyId, fromDate, toDate, {
+      includeEntries,
+    });
 
     if (mode === "daily") {
       return res.json({
         from: fromDate,
         to: toDate,
         daily: result.daily || [],
+      });
+    }
+
+    if (mode === "entries") {
+      return res.json({
+        from: fromDate,
+        to: toDate,
+        entries: result.entries || [],
+        sales: result.sales || 0,
+        cost: result.cost || 0,
+        profit: result.profit || 0,
       });
     }
 

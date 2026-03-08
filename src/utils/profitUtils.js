@@ -1,21 +1,28 @@
 const StockLedger = require("../models/StockLedger");
+const Product = require("../models/Product");
 
-exports.getProfitSummary = async (companyId, fromDate, toDate) => {
+exports.getProfitSummary = async (companyId, fromDate, toDate, options = {}) => {
+  const { includeEntries = false } = options;
 
-  // 1️⃣ Fetch all SALES in range
   const sales = await StockLedger.find({
     companyId,
     type: { $in: ["SALE", "SALE_RETURN"] },
     createdAt: { $gte: fromDate, $lte: toDate },
   });
 
+  const productIds = [...new Set(sales.map((row) => String(row.productId)).filter(Boolean))];
+  const products = await Product.find({
+    companyId,
+    _id: { $in: productIds },
+  }).select("_id name");
+  const productMap = Object.fromEntries(products.map((p) => [String(p._id), p.name]));
+
   let totalSales = 0;
   let totalCost = 0;
   const dailyMap = {};
+  const entries = [];
 
   for (const sale of sales) {
-
-    // 2️⃣ Fetch all PURCHASE + OPENING till sale date
     const stockEntries = await StockLedger.find({
       companyId,
       productId: sale.productId,
@@ -25,10 +32,8 @@ exports.getProfitSummary = async (companyId, fromDate, toDate) => {
 
     const totalQty = stockEntries.reduce(
       (sum, entry) =>
-        sum +
-        Number(entry.quantity || 0) *
-          (entry.type === "PURCHASE_RETURN" ? -1 : 1),
-      0
+        sum + Number(entry.quantity || 0) * (entry.type === "PURCHASE_RETURN" ? -1 : 1),
+      0,
     );
 
     const totalValue = stockEntries.reduce(
@@ -37,14 +42,17 @@ exports.getProfitSummary = async (companyId, fromDate, toDate) => {
         Number(entry.quantity || 0) *
           Number(entry.rate || 0) *
           (entry.type === "PURCHASE_RETURN" ? -1 : 1),
-      0
+      0,
     );
 
     const avgCost = totalQty > 0 ? totalValue / totalQty : 0;
 
     const direction = sale.type === "SALE_RETURN" ? -1 : 1;
-    const saleValue = Number(sale.quantity) * Number(sale.rate) * direction;
-    const costValue = Number(sale.quantity) * avgCost * direction;
+    const quantity = Number(sale.quantity || 0);
+    const saleRate = Number(sale.rate || 0);
+    const saleValue = quantity * saleRate * direction;
+    const costValue = quantity * avgCost * direction;
+
     totalSales += saleValue;
     totalCost += costValue;
 
@@ -52,9 +60,23 @@ exports.getProfitSummary = async (companyId, fromDate, toDate) => {
     if (!dailyMap[dayKey]) {
       dailyMap[dayKey] = { date: dayKey, sales: 0, cost: 0, profit: 0 };
     }
+
     dailyMap[dayKey].sales += saleValue;
     dailyMap[dayKey].cost += costValue;
     dailyMap[dayKey].profit += saleValue - costValue;
+
+    if (includeEntries) {
+      entries.push({
+        date: sale.createdAt,
+        type: sale.type,
+        productId: sale.productId,
+        productName: productMap[String(sale.productId)] || "Unknown Product",
+        quantity: direction > 0 ? quantity : -quantity,
+        costPrice: Number(avgCost.toFixed(2)),
+        salePrice: saleRate,
+        profit: Number((saleValue - costValue).toFixed(2)),
+      });
+    }
   }
 
   const daily = Object.values(dailyMap)
@@ -66,10 +88,16 @@ exports.getProfitSummary = async (companyId, fromDate, toDate) => {
       profit: Number(row.profit.toFixed(2)),
     }));
 
-  return {
+  const result = {
     sales: Number(totalSales.toFixed(2)),
     cost: Number(totalCost.toFixed(2)),
     profit: Number((totalSales - totalCost).toFixed(2)),
     daily,
   };
+
+  if (includeEntries) {
+    result.entries = entries.sort((a, b) => new Date(a.date) - new Date(b.date));
+  }
+
+  return result;
 };

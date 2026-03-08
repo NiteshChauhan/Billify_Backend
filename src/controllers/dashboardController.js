@@ -1,4 +1,5 @@
-﻿const SalesInvoice = require("../models/SalesInvoice");
+const mongoose = require("mongoose");
+const SalesInvoice = require("../models/SalesInvoice");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Payment = require("../models/Payment");
 const Product = require("../models/Product");
@@ -6,85 +7,85 @@ const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 exports.getDashboardSummary = async (req, res) => {
   try {
-    const companyId = req.user.companyId;
+    const companyObjectId = new mongoose.Types.ObjectId(String(req.user.companyId));
     const range = getDateRangeFromQuery(req.query);
-    const dateFilter = range
+    const invoiceDateFilter = range
       ? { invoiceDate: { $gte: range.fromDate, $lte: range.toDate } }
       : {};
 
-    const [salesAgg] = await SalesInvoice.aggregate([
-      { $match: { companyId, ...dateFilter } },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-    ]);
-
-    const [purchaseAgg] = await PurchaseInvoice.aggregate([
-      { $match: { companyId, ...dateFilter } },
-      { $group: { _id: null, total: { $sum: "$totalAmount" } } },
-    ]);
-
-    const [paymentAgg] = await Payment.aggregate([
-      {
-        $match: {
-          companyId,
-          invoiceType: "SALE",
-          ...(range
-            ? { paymentDate: { $gte: range.fromDate, $lte: range.toDate } }
-            : {}),
+    const [salesAgg, purchaseAgg, paymentAgg, totalProducts] = await Promise.all([
+      SalesInvoice.aggregate([
+        { $match: { companyId: companyObjectId, ...invoiceDateFilter } },
+        { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      ]),
+      PurchaseInvoice.aggregate([
+        { $match: { companyId: companyObjectId, ...invoiceDateFilter } },
+        { $group: { _id: null, total: { $sum: "$totalAmount" } } },
+      ]),
+      Payment.aggregate([
+        {
+          $match: {
+            companyId: companyObjectId,
+            invoiceType: "SALE",
+            ...(range
+              ? { paymentDate: { $gte: range.fromDate, $lte: range.toDate } }
+              : {}),
+          },
         },
-      },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
+        { $group: { _id: null, total: { $sum: "$amount" } } },
+      ]),
+      Product.countDocuments({ companyId: companyObjectId }),
     ]);
-
-    const totalProducts = await Product.countDocuments({ companyId });
 
     const year = new Date().getFullYear();
-    const start = new Date(`${year}-01-01`);
-    const end = new Date(`${year}-12-31`);
+    const start = new Date(`${year}-01-01T00:00:00.000Z`);
+    const end = new Date(`${year}-12-31T23:59:59.999Z`);
 
-    const salesMonthly = await SalesInvoice.aggregate([
+    const buildMonthlyPipeline = () => [
+      { $match: { companyId: companyObjectId } },
       {
-        $match: {
-          companyId,
-          invoiceDate: { $gte: start, $lte: end },
+        $addFields: {
+          chartDate: {
+            $convert: {
+              input: "$invoiceDate",
+              to: "date",
+              onError: "$createdAt",
+              onNull: "$createdAt",
+            },
+          },
         },
       },
+      { $match: { chartDate: { $gte: start, $lte: end } } },
       {
         $group: {
-          _id: { $month: "$invoiceDate" },
+          _id: { $month: "$chartDate" },
           total: { $sum: "$totalAmount" },
         },
       },
-    ]);
+    ];
 
-    const purchaseMonthly = await PurchaseInvoice.aggregate([
-      {
-        $match: {
-          companyId,
-          invoiceDate: { $gte: start, $lte: end },
-        },
-      },
-      {
-        $group: {
-          _id: { $month: "$invoiceDate" },
-          total: { $sum: "$totalAmount" },
-        },
-      },
+    const [salesMonthly, purchaseMonthly] = await Promise.all([
+      SalesInvoice.aggregate(buildMonthlyPipeline()),
+      PurchaseInvoice.aggregate(buildMonthlyPipeline()),
     ]);
 
     const months = Array.from({ length: 12 }, (_, i) => i + 1);
     const mapMonthly = (data) =>
-      months.map((m) => data.find((d) => d._id === m)?.total || 0);
+      months.map((m) => Number(data.find((d) => d._id === m)?.total || 0));
 
     res.json({
-      totalSales: salesAgg?.total || 0,
-      totalPurchase: purchaseAgg?.total || 0,
-      totalPayments: paymentAgg?.total || 0,
-      totalProducts,
+      totalSales: Number(salesAgg?.[0]?.total || 0),
+      totalPurchase: Number(purchaseAgg?.[0]?.total || 0),
+      totalPayments: Number(paymentAgg?.[0]?.total || 0),
+      totalProducts: Number(totalProducts || 0),
       monthlySales: mapMonthly(salesMonthly),
       monthlyPurchase: mapMonthly(purchaseMonthly),
     });
   } catch (err) {
     console.error("Dashboard Error:", err);
-    res.status(500).json({ error: "Failed to load dashboard" });
+    res.status(500).json({
+      error: "Failed to load dashboard",
+      message: err.message,
+    });
   }
 };
