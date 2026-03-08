@@ -42,7 +42,7 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       companyId,
       partyId,
       ...(query ? { returnDate: query } : {}),
-    }).select("returnDate returnType totalAmount billType billId"),
+    }).select("returnDate returnType totalAmount billType billId returnNo"),
   ]);
 
   const ledger = [];
@@ -106,14 +106,12 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
 
   returns.forEach((r) => {
     const isSaleReturn = r.returnType === "SALE_RETURN";
-    const invoiceNo = isSaleReturn
-      ? salesMap[String(r.billId)] || "-"
-      : purchaseMap[String(r.billId)] || "-";
+    const returnBillNo = r.returnNo || (isSaleReturn ? "SALE_RETURN" : "PURCHASE_RETURN");
     ledger.push({
       date: r.returnDate,
       type: isSaleReturn ? "Sale Return" : "Purchase Return",
-      particulars: isSaleReturn ? "Sale Return" : "Purchase Return",
-      billNumber: invoiceNo,
+      particulars: `${isSaleReturn ? "Sale Return" : "Purchase Return"} ${returnBillNo}`,
+      billNumber: returnBillNo,
       debit: isSaleReturn ? 0 : r.totalAmount,
       credit: isSaleReturn ? r.totalAmount : 0,
       billId: r.billId,

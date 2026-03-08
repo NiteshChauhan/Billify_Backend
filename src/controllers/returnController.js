@@ -28,20 +28,6 @@ const validateItems = (items = []) => {
   });
 };
 
-const updateInvoiceAfterReturn = async (invoice, returnAmount) => {
-  invoice.totalAmount = Math.max(0, Number(invoice.totalAmount || 0) - returnAmount);
-  if (invoice.paidAmount > invoice.totalAmount) {
-    invoice.paidAmount = invoice.totalAmount;
-  }
-  invoice.status =
-    invoice.paidAmount >= invoice.totalAmount
-      ? "PAID"
-      : invoice.paidAmount > 0
-        ? "PARTIAL"
-        : "DUE";
-  await invoice.save();
-};
-
 exports.createSaleReturn = async (req, res) => {
   try {
     const { billId, items, remarks, returnDate } = req.body;
@@ -112,14 +98,13 @@ exports.createSaleReturn = async (req, res) => {
       returnType: "SALE_RETURN",
       billType: "SALE",
       billId: invoice._id,
+      originalSaleId: invoice._id,
       returnNo,
       returnDate,
       items,
       totalAmount,
       remarks,
     });
-
-    await updateInvoiceAfterReturn(invoice, totalAmount);
 
     const party = await Party.findById(invoice.partyId);
     if (party) {
@@ -220,14 +205,13 @@ exports.createPurchaseReturn = async (req, res) => {
       returnType: "PURCHASE_RETURN",
       billType: "PURCHASE",
       billId: invoice._id,
+      originalPurchaseId: invoice._id,
       returnNo: normalizedReturnNo,
       returnDate,
       items,
       totalAmount,
       remarks,
     });
-
-    await updateInvoiceAfterReturn(invoice, totalAmount);
 
     const party = await Party.findById(invoice.partyId);
     if (party) {

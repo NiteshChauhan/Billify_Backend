@@ -1,6 +1,7 @@
 const Party = require("../models/Party");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
+const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const normalizeRole = (role = "") => {
@@ -26,25 +27,40 @@ const buildOutstandingForRole = async ({ companyId, role, rangeFilter }) => {
     role === "supplier"
       ? await PurchaseInvoice.find({ companyId, ...rangeFilter })
       : await SalesInvoice.find({ companyId, ...rangeFilter });
+  const returns = await ReturnEntry.find({
+    companyId,
+    ...(role === "supplier"
+      ? { returnType: "PURCHASE_RETURN" }
+      : { returnType: "SALE_RETURN" }),
+    ...(rangeFilter.invoiceDate ? { returnDate: rangeFilter.invoiceDate } : {}),
+  }).select("partyId totalAmount");
 
   const invoiceMap = {};
   invoices.forEach((inv) => {
     const id = inv.partyId?.toString();
     if (!id) return;
-    if (!invoiceMap[id]) invoiceMap[id] = { total: 0, paid: 0 };
+    if (!invoiceMap[id]) invoiceMap[id] = { total: 0, paid: 0, returned: 0 };
     invoiceMap[id].total += inv.totalAmount || 0;
     invoiceMap[id].paid += inv.paidAmount || 0;
   });
+  returns.forEach((ret) => {
+    const id = ret.partyId?.toString();
+    if (!id) return;
+    if (!invoiceMap[id]) invoiceMap[id] = { total: 0, paid: 0, returned: 0 };
+    invoiceMap[id].returned += Number(ret.totalAmount || 0);
+  });
 
   return parties.map((party) => {
-    const values = invoiceMap[party._id.toString()] || { total: 0, paid: 0 };
-    const outstanding = (party.openingBalance || 0) + values.total - values.paid;
+    const values = invoiceMap[party._id.toString()] || { total: 0, paid: 0, returned: 0 };
+    const outstanding =
+      (party.openingBalance || 0) + values.total - values.paid - values.returned;
     return {
       partyId: party._id,
       partyName: party.name,
       role,
       total: values.total,
       paid: values.paid,
+      returned: values.returned,
       outstanding,
       totalPurchase: role === "supplier" ? values.total : 0,
       totalPaid: role === "supplier" ? values.paid : 0,
@@ -171,4 +187,3 @@ exports.getAgeingByRole = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
-

@@ -26,6 +26,14 @@ const returnSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       required: true,
     },
+    originalSaleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "SalesInvoice",
+    },
+    originalPurchaseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PurchaseInvoice",
+    },
     returnNo: {
       type: String,
       trim: true,
