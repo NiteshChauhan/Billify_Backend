@@ -60,11 +60,11 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   purchases.forEach((p) => {
     ledger.push({
       date: p.invoiceDate,
-      type: "Purchase",
+      type: "PURCHASE",
       particulars: `Purchase Invoice ${p.invoiceNo}`,
-      billNumber: p.invoiceNo || "-",
-      debit: p.totalAmount,
-      credit: 0,
+      bill_no: p.invoiceNo || "-",
+      debit: 0,
+      credit: p.totalAmount,
       billId: p._id,
       billType: "PURCHASE",
       canEditBill: isSameDay(p.invoiceDate),
@@ -74,11 +74,11 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   sales.forEach((s) => {
     ledger.push({
       date: s.invoiceDate,
-      type: "Sale",
+      type: "SALE",
       particulars: `Sales Invoice ${s.invoiceNo}`,
-      billNumber: s.invoiceNo || "-",
-      debit: 0,
-      credit: s.totalAmount,
+      bill_no: s.invoiceNo || "-",
+      debit: s.totalAmount,
+      credit: 0,
       billId: s._id,
       billType: "SALE",
       canEditBill: isSameDay(s.invoiceDate),
@@ -93,11 +93,11 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
         : salesMap[String(p.invoiceId)] || "-";
     ledger.push({
       date: p.paymentDate,
-      type: "Payment",
+      type: "PAYMENT",
       particulars: `Payment (${p.paymentMode})`,
-      billNumber: invoiceNo,
-      debit: isReceived ? 0 : p.amount,
-      credit: isReceived ? p.amount : 0,
+      bill_no: invoiceNo,
+      debit: isReceived ? 0 : p.amount, // paid
+      credit: isReceived ? p.amount : 0, // received
       billId: p.invoiceId,
       billType: p.invoiceType,
       canEditBill: false,
@@ -106,14 +106,14 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
 
   returns.forEach((r) => {
     const isSaleReturn = r.returnType === "SALE_RETURN";
-    const returnBillNo = r.returnNo || (isSaleReturn ? "SALE_RETURN" : "PURCHASE_RETURN");
+    const returnBillNo = r.returnNo || `RET-${String(r._id).slice(-6).toUpperCase()}`;
     ledger.push({
       date: r.returnDate,
-      type: isSaleReturn ? "Sale Return" : "Purchase Return",
+      type: r.returnType,
       particulars: `${isSaleReturn ? "Sale Return" : "Purchase Return"} ${returnBillNo}`,
-      billNumber: returnBillNo,
-      debit: isSaleReturn ? 0 : r.totalAmount,
-      credit: isSaleReturn ? r.totalAmount : 0,
+      bill_no: returnBillNo,
+      debit: isSaleReturn ? 0 : r.totalAmount, // purchase return
+      credit: isSaleReturn ? r.totalAmount : 0, // sale return
       billId: r.billId,
       billType: r.billType,
       canEditBill: false,
