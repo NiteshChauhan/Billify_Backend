@@ -18,6 +18,7 @@ exports.createPurchaseInvoice = async (req, res) => {
     const {
       partyId: bodyPartyId,
       supplierId,
+      paymentType: bodyPaymentType,
       invoiceNo,
       items,
       tax = 0,
@@ -26,22 +27,33 @@ exports.createPurchaseInvoice = async (req, res) => {
     } = req.body;
     const partyId = bodyPartyId || supplierId;
 
-    if (!partyId || !items || items.length === 0) {
+    const paymentType = String(bodyPaymentType || "credit").toLowerCase();
+    const isCredit = paymentType === "credit";
+    const isCashOrBank = paymentType === "cash" || paymentType === "bank";
+
+    if ((!partyId && isCredit) || !items || items.length === 0) {
       return res.status(400).json({
         message: "Party and items are required",
       });
     }
 
-    const party = await Party.findOne({
-      _id: partyId,
-      companyId: req.user.companyId,
-      roles: "supplier",
-    });
+    if (!isCredit && !isCashOrBank) {
+      return res.status(400).json({ message: "Invalid paymentType" });
+    }
 
-    if (!party) {
-      return res.status(400).json({
-        message: "Invalid supplier party",
+    let party = null;
+    if (partyId) {
+      party = await Party.findOne({
+        _id: partyId,
+        companyId: req.user.companyId,
+        roles: "supplier",
       });
+
+      if (!party) {
+        return res.status(400).json({
+          message: "Invalid supplier party",
+        });
+      }
     }
 
     let subtotal = 0;
@@ -55,11 +67,14 @@ exports.createPurchaseInvoice = async (req, res) => {
 
     const totalAmount = subtotal + tax;
 
-    if (paidAmount > totalAmount) {
+    const requestedPaid = Number(paidAmount || 0);
+    if (requestedPaid > totalAmount) {
       return res.status(400).json({
         message: "Paid amount cannot exceed invoice total",
       });
     }
+
+    const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
 
     const normalizedInvoiceNo = String(invoiceNo || "").trim();
     if (!normalizedInvoiceNo) {
@@ -81,15 +96,21 @@ exports.createPurchaseInvoice = async (req, res) => {
 
     const invoice = await PurchaseInvoice.create({
       companyId: req.user.companyId,
-      partyId,
+      partyId: partyId || undefined,
+      paymentType,
       invoiceNo: normalizedInvoiceNo,
       invoiceDate,
       items,
       subtotal,
       tax,
       totalAmount,
-      paidAmount: 0,
-      status: "DUE",
+      paidAmount: finalPaidAmount,
+      status:
+        finalPaidAmount >= totalAmount
+          ? "PAID"
+          : finalPaidAmount > 0
+            ? "PARTIAL"
+            : "DUE",
     });
 
     for (const item of items) {
@@ -104,35 +125,25 @@ exports.createPurchaseInvoice = async (req, res) => {
       });
     }
 
-    let finalPaidAmount = 0;
-
-    if (paidAmount > 0) {
-      await Payment.create({
-        companyId: req.user.companyId,
-        partyId,
-        invoiceType: "PURCHASE",
-        invoiceId: invoice._id,
-        amount: paidAmount,
-        paymentMode: "CASH",
-        remarks: "Payment at invoice creation",
-      });
-
-      finalPaidAmount = paidAmount;
+    if (party) {
+      party.balance = party.balance || 0;
+      party.balance += totalAmount - finalPaidAmount;
+      await party.save();
     }
 
-    invoice.paidAmount = finalPaidAmount;
-    invoice.status =
-      finalPaidAmount === totalAmount
-        ? "PAID"
-        : finalPaidAmount > 0
-          ? "PARTIAL"
-          : "DUE";
-
-    await invoice.save();
-
-    party.balance = party.balance || 0;
-    party.balance += totalAmount - finalPaidAmount;
-    await party.save();
+    if (finalPaidAmount > 0) {
+      await Payment.create({
+        companyId: req.user.companyId,
+        partyId: party ? party._id : undefined,
+        invoiceType: "PURCHASE",
+        invoiceId: invoice._id,
+        paymentType: "PAID",
+        amount: finalPaidAmount,
+        paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+        remarks: party ? "Payment at invoice creation" : "Walk-in payment at invoice creation",
+        paymentDate: invoice.invoiceDate || new Date(),
+      });
+    }
 
     res.json(toPurchaseResponse(invoice));
   } catch (err) {
@@ -150,6 +161,9 @@ exports.getPurchases = async (req, res) => {
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
     query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+  }
+  if (req.query.paymentType) {
+    query.paymentType = String(req.query.paymentType).toLowerCase();
   }
 
   const data = await PurchaseInvoice.find(query)
@@ -175,6 +189,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     const {
       partyId: bodyPartyId,
       supplierId,
+      paymentType: bodyPaymentType,
       invoiceNo,
       items,
       tax = 0,
@@ -189,6 +204,10 @@ exports.updatePurchaseInvoice = async (req, res) => {
       return res.status(404).json({ message: "Invoice not found" });
     }
 
+    const paymentType = String(bodyPaymentType || invoice.paymentType || "credit").toLowerCase();
+    const isCredit = paymentType === "credit";
+    const isCashOrBank = paymentType === "cash" || paymentType === "bank";
+
     const today = new Date().toISOString().slice(0, 10);
     const invoiceDay = new Date(invoice.invoiceDate).toISOString().slice(0, 10);
 
@@ -198,7 +217,15 @@ exports.updatePurchaseInvoice = async (req, res) => {
       });
     }
 
-    const oldParty = await Party.findById(invoice.partyId);
+    if (!isCredit && !isCashOrBank) {
+      return res.status(400).json({ message: "Invalid paymentType" });
+    }
+
+    if (!partyId && isCredit) {
+      return res.status(400).json({ message: "Supplier is required for credit invoices" });
+    }
+
+    const oldParty = invoice.partyId ? await Party.findById(invoice.partyId) : null;
     if (oldParty) {
       oldParty.balance -= invoice.totalAmount - invoice.paidAmount;
       await oldParty.save();
@@ -225,13 +252,29 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
     const totalAmount = subtotal + tax;
 
-    if (paidAmount > totalAmount) {
+    const requestedPaid = Number(paidAmount || 0);
+    if (requestedPaid > totalAmount) {
       return res.status(400).json({
         message: "Paid amount cannot exceed invoice total",
       });
     }
 
-    invoice.partyId = partyId;
+    const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
+
+    let newParty = null;
+    if (partyId) {
+      newParty = await Party.findOne({
+        _id: partyId,
+        companyId: req.user.companyId,
+        roles: "supplier",
+      });
+      if (!newParty) {
+        return res.status(400).json({ message: "Invalid supplier party" });
+      }
+    }
+
+    invoice.partyId = partyId || undefined;
+    invoice.paymentType = paymentType;
 
     const normalizedInvoiceNo = String(invoiceNo || invoice.invoiceNo || "").trim();
     if (!normalizedInvoiceNo) {
@@ -267,25 +310,9 @@ exports.updatePurchaseInvoice = async (req, res) => {
       });
     }
 
-    let finalPaidAmount = 0;
-
-    if (paidAmount > 0) {
-      await Payment.create({
-        companyId: req.user.companyId,
-        partyId,
-        invoiceType: "PURCHASE",
-        invoiceId: invoice._id,
-        amount: paidAmount,
-        paymentMode: "CASH",
-        remarks: "Payment updated during invoice edit",
-      });
-
-      finalPaidAmount = paidAmount;
-    }
-
     invoice.paidAmount = finalPaidAmount;
     invoice.status =
-      finalPaidAmount === totalAmount
+      finalPaidAmount >= totalAmount
         ? "PAID"
         : finalPaidAmount > 0
           ? "PARTIAL"
@@ -293,11 +320,23 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
     await invoice.save();
 
-    const newParty = await Party.findById(partyId);
     if (newParty) {
-      newParty.balance =
-        (newParty.balance || 0) + (totalAmount - finalPaidAmount);
+      newParty.balance = (newParty.balance || 0) + (totalAmount - finalPaidAmount);
       await newParty.save();
+    }
+
+    if (finalPaidAmount > 0) {
+      await Payment.create({
+        companyId: req.user.companyId,
+        partyId: newParty ? newParty._id : undefined,
+        invoiceType: "PURCHASE",
+        invoiceId: invoice._id,
+        paymentType: "PAID",
+        amount: finalPaidAmount,
+        paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+        remarks: newParty ? "Payment updated during invoice edit" : "Walk-in payment updated during invoice edit",
+        paymentDate: invoice.invoiceDate || new Date(),
+      });
     }
 
     res.json(toPurchaseResponse(invoice));

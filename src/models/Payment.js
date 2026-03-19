@@ -12,7 +12,7 @@ const paymentSchema = new mongoose.Schema(
     partyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Party",
-      required: true,
+      required: false,
     },
 
     amount: {

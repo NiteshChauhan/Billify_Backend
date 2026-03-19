@@ -46,6 +46,7 @@ exports.createReceipt = async (req, res) => {
       partyId,
       invoiceType: "SALE",
       invoiceId,
+      paymentType: "RECEIVED",
       amount,
       paymentMode,
       referenceNo,

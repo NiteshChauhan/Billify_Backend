@@ -3,6 +3,7 @@ const auth = require("../middlewares/authMiddleware");
 const report = require("../controllers/reportController");
 const partyOutstanding = require("../controllers/partyOutstandingController");
 const partyLedger = require("../controllers/partyLedgerController");
+const ledgerList = require("../controllers/ledgerListController");
 
 router.use(auth);
 
@@ -19,6 +20,8 @@ router.get("/profit-loss", report.profitLossReport);
 /* PARTY LEDGER */
 router.get("/ledger/:partyId", partyLedger.getPartyLedger);
 router.get("/ledger/:partyId/pdf", partyLedger.exportPartyLedgerPdf);
+router.get("/ledger-list", ledgerList.getLedgerList);
+router.get("/ledger-transactions", ledgerList.getLedgerTransactions);
 
 /* OUTSTANDING */
 router.get("/outstanding/suppliers", partyOutstanding.getSupplierOutstanding);

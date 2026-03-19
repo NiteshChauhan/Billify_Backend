@@ -27,34 +27,46 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   const [purchases, sales, payments, returns] = await Promise.all([
     includeSupplier
       ? PurchaseInvoice.find({ companyId, partyId, ...invoiceDateQuery }).select(
-          "invoiceDate totalAmount invoiceNo _id",
+          "invoiceDate totalAmount invoiceNo paymentType _id",
         )
       : [],
     includeCustomer
       ? SalesInvoice.find({ companyId, partyId, ...invoiceDateQuery }).select(
-          "invoiceDate totalAmount invoiceNo _id",
+          "invoiceDate totalAmount invoiceNo paymentType _id",
         )
       : [],
-    Payment.find({ companyId, partyId, ...paymentDateQuery }).select(
+    Payment.find({
+      companyId,
+      partyId,
+      ...(includeSupplier && !includeCustomer ? { invoiceType: "PURCHASE" } : {}),
+      ...(includeCustomer && !includeSupplier ? { invoiceType: "SALE" } : {}),
+      ...paymentDateQuery,
+    }).select(
       "paymentDate amount paymentMode referenceNo paymentType invoiceType invoiceId _id",
     ),
     ReturnEntry.find({
       companyId,
       partyId,
       ...(query ? { returnDate: query } : {}),
+      ...(includeSupplier && !includeCustomer ? { returnType: "PURCHASE_RETURN" } : {}),
+      ...(includeCustomer && !includeSupplier ? { returnType: "SALE_RETURN" } : {}),
     }).select("returnDate returnType totalAmount billType billId returnNo"),
   ]);
 
   const ledger = [];
   const purchaseMap = {};
   const salesMap = {};
+  const purchasePayTypeMap = {};
+  const salesPayTypeMap = {};
 
   purchases.forEach((p) => {
     purchaseMap[String(p._id)] = p.invoiceNo || "-";
+    purchasePayTypeMap[String(p._id)] = (p.paymentType || "credit").toString().toLowerCase();
   });
 
   sales.forEach((s) => {
     salesMap[String(s._id)] = s.invoiceNo || "-";
+    salesPayTypeMap[String(s._id)] = (s.paymentType || "credit").toString().toLowerCase();
   });
 
   purchases.forEach((p) => {
@@ -63,6 +75,8 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       type: "PURCHASE",
       particulars: `Purchase Invoice ${p.invoiceNo}`,
       bill_no: p.invoiceNo || "-",
+      paymentType: (p.paymentType || "credit").toString().toLowerCase(),
+      partyId,
       debit: 0,
       credit: p.totalAmount,
       billId: p._id,
@@ -77,6 +91,8 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       type: "SALE",
       particulars: `Sales Invoice ${s.invoiceNo}`,
       bill_no: s.invoiceNo || "-",
+      paymentType: (s.paymentType || "credit").toString().toLowerCase(),
+      partyId,
       debit: s.totalAmount,
       credit: 0,
       billId: s._id,
@@ -96,6 +112,8 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       type: "PAYMENT",
       particulars: `Payment (${p.paymentMode})`,
       bill_no: invoiceNo,
+      paymentType: String(p.paymentMode || "").toUpperCase() === "CASH" ? "cash" : "bank",
+      partyId,
       debit: isReceived ? 0 : p.amount, // paid
       credit: isReceived ? p.amount : 0, // received
       billId: p.invoiceId,
@@ -107,11 +125,17 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
   returns.forEach((r) => {
     const isSaleReturn = r.returnType === "SALE_RETURN";
     const returnBillNo = r.returnNo || `RET-${String(r._id).slice(-6).toUpperCase()}`;
+    const mappedPaymentType =
+      r.billType === "PURCHASE"
+        ? purchasePayTypeMap[String(r.billId)] || "credit"
+        : salesPayTypeMap[String(r.billId)] || "credit";
     ledger.push({
       date: r.returnDate,
       type: r.returnType,
       particulars: `${isSaleReturn ? "Sale Return" : "Purchase Return"} ${returnBillNo}`,
       bill_no: returnBillNo,
+      paymentType: mappedPaymentType,
+      partyId,
       debit: isSaleReturn ? 0 : r.totalAmount, // purchase return
       credit: isSaleReturn ? r.totalAmount : 0, // sale return
       billId: r.billId,
@@ -128,7 +152,12 @@ exports.getPartyLedger = async (req, res) => {
   try {
     const { partyId } = req.params;
     const companyId = req.user.companyId;
-    const role = req.query.role;
+    const rawRole = req.query.role;
+    const filterType = String(req.query.type || "all").toLowerCase();
+    const role =
+      filterType === "customer" || filterType === "supplier"
+        ? filterType
+        : rawRole;
 
     const party = await Party.findOne({ _id: partyId, companyId });
     if (!party) {
@@ -146,6 +175,12 @@ exports.getPartyLedger = async (req, res) => {
       role,
       query,
     });
+
+    if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
+      ledger = ledger.filter((e) => e.paymentType === filterType);
+    } else if (filterType === "party") {
+      ledger = ledger.filter((e) => !!e.partyId);
+    }
 
     let balance = party.openingBalance || 0;
     ledger = ledger.map((entry) => {
@@ -167,7 +202,12 @@ exports.exportPartyLedgerPdf = async (req, res) => {
   try {
     const { partyId } = req.params;
     const companyId = req.user.companyId;
-    const role = req.query.role;
+    const rawRole = req.query.role;
+    const filterType = String(req.query.type || "all").toLowerCase();
+    const role =
+      filterType === "customer" || filterType === "supplier"
+        ? filterType
+        : rawRole;
 
     const party = await Party.findOne({ _id: partyId, companyId });
     if (!party) {
@@ -180,6 +220,12 @@ exports.exportPartyLedgerPdf = async (req, res) => {
       : null;
 
     let ledger = await buildLedger({ companyId, partyId, role, query });
+
+    if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
+      ledger = ledger.filter((e) => e.paymentType === filterType);
+    } else if (filterType === "party") {
+      ledger = ledger.filter((e) => !!e.partyId);
+    }
     let balance = party.openingBalance || 0;
     ledger = ledger.map((entry) => {
       balance = balance + entry.debit - entry.credit;
@@ -194,7 +240,9 @@ exports.exportPartyLedgerPdf = async (req, res) => {
     );
     doc.pipe(res);
 
-    doc.fontSize(16).text("Party Ledger", { align: "center" });
+    const titleSuffix =
+      filterType && filterType !== "all" ? ` (${filterType.toUpperCase()})` : "";
+    doc.fontSize(16).text(`Party Ledger${titleSuffix}`, { align: "center" });
     doc.moveDown(0.5);
     doc.fontSize(11).text(`Party: ${party.name}`);
     doc.text(`Opening Balance: ${party.openingBalance || 0}`);

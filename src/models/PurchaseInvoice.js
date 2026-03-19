@@ -12,7 +12,13 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     partyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Party",
-      required: true,
+      required: false,
+    },
+
+    paymentType: {
+      type: String,
+      enum: ["cash", "bank", "credit"],
+      default: "credit",
     },
 
     invoiceNo: String,
