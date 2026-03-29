@@ -13,6 +13,7 @@ router.get("/stock", report.stockReport);
 /* PURCHASE & SALES */
 router.get("/purchase", report.purchaseReport);
 router.get("/sales", report.salesReport);
+router.get("/daily", report.dailyReport);
 
 /* PROFIT & LOSS */
 router.get("/profit-loss", report.profitLossReport);

@@ -7,6 +7,18 @@ const Payment = require("../models/Payment");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { getProfitSummary } = require("../utils/profitUtils");
 
+const startOfDay = (value) => {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  return date;
+};
+
+const endOfDay = (value) => {
+  const date = new Date(value);
+  date.setHours(23, 59, 59, 999);
+  return date;
+};
+
 /* ================= STOCK REPORT ================= */
 exports.stockReport = async (req, res) => {
   try {
@@ -164,6 +176,114 @@ exports.profitLossReport = async (req, res) => {
   } catch (err) {
     console.error("Profit Loss Error:", err);
     res.status(500).json({ error: "Failed to load profit & loss" });
+  }
+};
+
+/* ================= DAILY REPORT / DAY BOOK ================= */
+exports.dailyReport = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const requestedDate = req.query.date || new Date().toISOString().slice(0, 10);
+    const selectedDate = new Date(requestedDate);
+
+    if (Number.isNaN(selectedDate.getTime())) {
+      return res.status(400).json({ error: "Invalid date" });
+    }
+
+    const paymentTypeFilter = String(req.query.paymentType || "all").toLowerCase();
+    const billTypeFilter = String(req.query.type || "all").toLowerCase();
+    const search = String(req.query.search || "").trim().toLowerCase();
+    const validPaymentTypes = ["all", "cash", "bank"];
+    const validBillTypes = ["all", "sale", "purchase"];
+
+    if (!validPaymentTypes.includes(paymentTypeFilter)) {
+      return res.status(400).json({ error: "Invalid paymentType" });
+    }
+
+    if (!validBillTypes.includes(billTypeFilter)) {
+      return res.status(400).json({ error: "Invalid type" });
+    }
+
+    const dayStart = startOfDay(selectedDate);
+    const dayEnd = endOfDay(selectedDate);
+
+    const dailyInvoiceQuery = {
+      companyId,
+      paymentType: paymentTypeFilter === "all" ? { $in: ["cash", "bank"] } : paymentTypeFilter,
+      invoiceDate: { $gte: dayStart, $lte: dayEnd },
+    };
+
+    const previousInvoiceQuery = {
+      companyId,
+      paymentType: paymentTypeFilter === "all" ? { $in: ["cash", "bank"] } : paymentTypeFilter,
+      invoiceDate: { $lt: dayStart },
+    };
+
+    const [sales, purchases, previousSales, previousPurchases] = await Promise.all([
+      SalesInvoice.find(
+        billTypeFilter === "purchase" ? { _id: null } : dailyInvoiceQuery,
+      )
+        .populate("partyId", "name")
+        .sort({ invoiceDate: 1, createdAt: 1 }),
+      PurchaseInvoice.find(
+        billTypeFilter === "sale" ? { _id: null } : dailyInvoiceQuery,
+      )
+        .populate("partyId", "name")
+        .sort({ invoiceDate: 1, createdAt: 1 }),
+      SalesInvoice.find(previousInvoiceQuery).select("totalAmount"),
+      PurchaseInvoice.find(previousInvoiceQuery).select("totalAmount"),
+    ]);
+
+    const matchesSearch = (partyName) => {
+      if (!search) return true;
+      return String(partyName || "cash").toLowerCase().includes(search);
+    };
+
+    const rows = [
+      ...sales.map((invoice) => ({
+        date: invoice.invoiceDate,
+        type: "sale",
+        partyName: invoice.partyId?.name || "Cash",
+        paymentType: String(invoice.paymentType || "cash").toLowerCase(),
+        amount: Number(invoice.totalAmount || 0),
+        billId: invoice._id,
+      })),
+      ...purchases.map((invoice) => ({
+        date: invoice.invoiceDate,
+        type: "purchase",
+        partyName: invoice.partyId?.name || "Cash",
+        paymentType: String(invoice.paymentType || "cash").toLowerCase(),
+        amount: Number(invoice.totalAmount || 0),
+        billId: invoice._id,
+      })),
+    ]
+      .filter((row) => matchesSearch(row.partyName))
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    const previousSalesTotal = previousSales.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+    const previousPurchaseTotal = previousPurchases.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+    const openingBalance = previousSalesTotal - previousPurchaseTotal;
+
+    const totalSales = rows
+      .filter((row) => row.type === "sale")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalPurchase = rows
+      .filter((row) => row.type === "purchase")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const closingBalance = openingBalance + totalSales - totalPurchase;
+
+    res.json({
+      rows,
+      summary: {
+        openingBalance,
+        totalSales,
+        totalPurchase,
+        closingBalance,
+      },
+    });
+  } catch (err) {
+    console.error("Daily Report Error:", err);
+    res.status(500).json({ error: "Failed to load daily report" });
   }
 };
 
