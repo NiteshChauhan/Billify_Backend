@@ -2,6 +2,8 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const StockLedger = require("../models/StockLedger");
 const Party = require("../models/Party");
 const Payment = require("../models/Payment");
+const BankAccount = require("../models/BankAccount");
+const Product = require("../models/Product");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const toPurchaseResponse = (invoiceDoc) => {
@@ -19,6 +21,7 @@ exports.createPurchaseInvoice = async (req, res) => {
       partyId: bodyPartyId,
       supplierId,
       paymentType: bodyPaymentType,
+      bankAccountId: bodyBankAccountId,
       invoiceNo,
       items,
       tax = 0,
@@ -30,6 +33,7 @@ exports.createPurchaseInvoice = async (req, res) => {
     const paymentType = String(bodyPaymentType || "credit").toLowerCase();
     const isCredit = paymentType === "credit";
     const isCashOrBank = paymentType === "cash" || paymentType === "bank";
+    let bankAccountId = null;
 
     if ((!partyId && isCredit) || !items || items.length === 0) {
       return res.status(400).json({
@@ -39,6 +43,19 @@ exports.createPurchaseInvoice = async (req, res) => {
 
     if (!isCredit && !isCashOrBank) {
       return res.status(400).json({ message: "Invalid paymentType" });
+    }
+    if (paymentType === "bank") {
+      if (!bodyBankAccountId) {
+        return res.status(400).json({ message: "bankAccountId is required for bank payments" });
+      }
+      const bankAccount = await BankAccount.findOne({
+        _id: bodyBankAccountId,
+        companyId: req.user.companyId,
+      }).select("_id");
+      if (!bankAccount) {
+        return res.status(400).json({ message: "Invalid bank account" });
+      }
+      bankAccountId = bankAccount._id;
     }
 
     let party = null;
@@ -98,6 +115,7 @@ exports.createPurchaseInvoice = async (req, res) => {
       companyId: req.user.companyId,
       partyId: partyId || undefined,
       paymentType,
+      bankAccountId,
       invoiceNo: normalizedInvoiceNo,
       invoiceDate,
       items,
@@ -123,6 +141,10 @@ exports.createPurchaseInvoice = async (req, res) => {
         referenceType: "PURCHASE_INVOICE",
         referenceId: invoice._id,
       });
+      await Product.updateOne(
+        { _id: item.productId, companyId: req.user.companyId },
+        { $set: { lastPurchaseRate: Number(item.rate || 0) } },
+      );
     }
 
     if (party) {
@@ -140,6 +162,7 @@ exports.createPurchaseInvoice = async (req, res) => {
         paymentType: "PAID",
         amount: finalPaidAmount,
         paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+        bankAccountId,
         remarks: party ? "Payment at invoice creation" : "Walk-in payment at invoice creation",
         paymentDate: invoice.invoiceDate || new Date(),
       });
@@ -190,6 +213,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
       partyId: bodyPartyId,
       supplierId,
       paymentType: bodyPaymentType,
+      bankAccountId: bodyBankAccountId,
       invoiceNo,
       items,
       tax = 0,
@@ -207,6 +231,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     const paymentType = String(bodyPaymentType || invoice.paymentType || "credit").toLowerCase();
     const isCredit = paymentType === "credit";
     const isCashOrBank = paymentType === "cash" || paymentType === "bank";
+    let bankAccountId = null;
 
     const today = new Date().toISOString().slice(0, 10);
     const invoiceDay = new Date(invoice.invoiceDate).toISOString().slice(0, 10);
@@ -219,6 +244,19 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
     if (!isCredit && !isCashOrBank) {
       return res.status(400).json({ message: "Invalid paymentType" });
+    }
+    if (paymentType === "bank") {
+      if (!bodyBankAccountId) {
+        return res.status(400).json({ message: "bankAccountId is required for bank payments" });
+      }
+      const bankAccount = await BankAccount.findOne({
+        _id: bodyBankAccountId,
+        companyId: req.user.companyId,
+      }).select("_id");
+      if (!bankAccount) {
+        return res.status(400).json({ message: "Invalid bank account" });
+      }
+      bankAccountId = bankAccount._id;
     }
 
     if (!partyId && isCredit) {
@@ -275,6 +313,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
     invoice.partyId = partyId || undefined;
     invoice.paymentType = paymentType;
+    invoice.bankAccountId = bankAccountId;
 
     const normalizedInvoiceNo = String(invoiceNo || invoice.invoiceNo || "").trim();
     if (!normalizedInvoiceNo) {
@@ -308,6 +347,10 @@ exports.updatePurchaseInvoice = async (req, res) => {
         referenceType: "PURCHASE_INVOICE",
         referenceId: invoice._id,
       });
+      await Product.updateOne(
+        { _id: item.productId, companyId: req.user.companyId },
+        { $set: { lastPurchaseRate: Number(item.rate || 0) } },
+      );
     }
 
     invoice.paidAmount = finalPaidAmount;
@@ -334,6 +377,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
         paymentType: "PAID",
         amount: finalPaidAmount,
         paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+        bankAccountId,
         remarks: newParty ? "Payment updated during invoice edit" : "Walk-in payment updated during invoice edit",
         paymentDate: invoice.invoiceDate || new Date(),
       });

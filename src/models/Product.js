@@ -8,8 +8,10 @@ const productSchema = new mongoose.Schema({
   },
   name: String,
   sku: String,
+  price: { type: Number, default: 0 },
   openingStock: { type: Number, default: 0 },
   openingRate: { type: Number, default: 0 },
+  lastPurchaseRate: { type: Number, default: 0 },
   attributes: Object,
   createdAt: { type: Date, default: Date.now }
 });

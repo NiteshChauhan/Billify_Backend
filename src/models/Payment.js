@@ -26,6 +26,12 @@ const paymentSchema = new mongoose.Schema(
       default: "CASH",
     },
 
+    bankAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BankAccount",
+      default: null,
+    },
+
     paymentType: {
       type: String,
       enum: ["PAID", "RECEIVED"],

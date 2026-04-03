@@ -89,4 +89,13 @@ app.use("/api/profit", profitRoutes);
 const dashboardRoutes = require("./routes/dashboardRoutes");
 app.use("/api/dashboard", dashboardRoutes);
 
+const companyBalanceRoutes = require("./routes/companyBalanceRoutes");
+app.use("/api/company-balance", companyBalanceRoutes);
+
+const expenseRoutes = require("./routes/expenseRoutes");
+app.use("/api/expenses", expenseRoutes);
+
+const bankAccountRoutes = require("./routes/bankAccountRoutes");
+app.use("/api/bank-accounts", bankAccountRoutes);
+
 module.exports = app;

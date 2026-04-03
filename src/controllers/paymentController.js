@@ -2,6 +2,7 @@ const Payment = require("../models/Payment");
 const Party = require("../models/Party");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
+const BankAccount = require("../models/BankAccount");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 /* ================= CREATE PAYMENT ================= */
@@ -13,12 +14,28 @@ exports.createPayment = async (req, res) => {
       invoiceId,
       amount,
       paymentMode,
+      bankAccountId: bodyBankAccountId,
       referenceNo,
       remarks,
     } = req.body;
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ error: "Invalid payment amount" });
+    }
+
+    let bankAccountId = null;
+    if (String(paymentMode || "").toUpperCase() === "BANK") {
+      if (!bodyBankAccountId) {
+        return res.status(400).json({ error: "bankAccountId is required for bank payments" });
+      }
+      const bankAccount = await BankAccount.findOne({
+        _id: bodyBankAccountId,
+        companyId: req.user.companyId,
+      }).select("_id");
+      if (!bankAccount) {
+        return res.status(400).json({ error: "Invalid bank account" });
+      }
+      bankAccountId = bankAccount._id;
     }
 
     /* =====================================================
@@ -63,6 +80,7 @@ exports.createPayment = async (req, res) => {
         paymentType: "PAID",
         amount,
         paymentMode,
+        bankAccountId,
         referenceNo,
         remarks,
       });
@@ -123,6 +141,7 @@ exports.createPayment = async (req, res) => {
         paymentType: "RECEIVED",
         amount,
         paymentMode,
+        bankAccountId,
         referenceNo,
         remarks,
       });

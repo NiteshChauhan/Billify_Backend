@@ -21,6 +21,12 @@ const purchaseInvoiceSchema = new mongoose.Schema(
       default: "credit",
     },
 
+    bankAccountId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BankAccount",
+      default: null,
+    },
+
     invoiceNo: String,
     invoiceDate: { type: Date, default: Date.now },
 

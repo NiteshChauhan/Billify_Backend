@@ -2,6 +2,7 @@ const SalesInvoice = require("../models/SalesInvoice");
 const StockLedger = require("../models/StockLedger");
 const Party = require("../models/Party");
 const Payment = require("../models/Payment");
+const BankAccount = require("../models/BankAccount");
 const { validateStockForSale } = require("../utils/stockValidation");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
@@ -22,6 +23,7 @@ exports.createSalesInvoice = async (req, res) => {
       vendorId,
       customerId,
       paymentType: bodyPaymentType,
+      bankAccountId: bodyBankAccountId,
       items,
       tax = 0,
       paidAmount = 0,
@@ -32,6 +34,7 @@ exports.createSalesInvoice = async (req, res) => {
     const paymentType = String(bodyPaymentType || "credit").toLowerCase();
     const isCredit = paymentType === "credit";
     const isCashOrBank = paymentType === "cash" || paymentType === "bank";
+    let bankAccountId = null;
 
     if ((!partyId && isCredit) || !items || items.length === 0) {
       return res.status(400).json({ message: "Customer & items required" });
@@ -40,6 +43,19 @@ exports.createSalesInvoice = async (req, res) => {
     /* 🔎 Validate Party is Vendor (Customer) */
     if (!isCredit && !isCashOrBank) {
       return res.status(400).json({ message: "Invalid paymentType" });
+    }
+    if (paymentType === "bank") {
+      if (!bodyBankAccountId) {
+        return res.status(400).json({ message: "bankAccountId is required for bank payments" });
+      }
+      const bankAccount = await BankAccount.findOne({
+        _id: bodyBankAccountId,
+        companyId: req.user.companyId,
+      }).select("_id");
+      if (!bankAccount) {
+        return res.status(400).json({ message: "Invalid bank account" });
+      }
+      bankAccountId = bankAccount._id;
     }
 
     let party = null;
@@ -93,6 +109,7 @@ exports.createSalesInvoice = async (req, res) => {
       companyId: req.user.companyId,
       partyId: partyId || undefined,
       paymentType,
+      bankAccountId,
       invoiceNo,
       invoiceDate,
       items,
@@ -138,6 +155,7 @@ exports.createSalesInvoice = async (req, res) => {
         paymentType: "RECEIVED",
         amount: finalPaidAmount,
         paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+        bankAccountId,
         remarks: party ? "Payment at invoice creation" : "Walk-in payment at invoice creation",
         paymentDate: invoice.invoiceDate || new Date(),
       });
@@ -186,6 +204,7 @@ exports.updateSalesInvoice = async (req, res) => {
       vendorId,
       customerId,
       paymentType: bodyPaymentType,
+      bankAccountId: bodyBankAccountId,
       items,
       tax = 0,
       paidAmount = 0,
@@ -202,6 +221,7 @@ exports.updateSalesInvoice = async (req, res) => {
     const paymentType = String(bodyPaymentType || invoice.paymentType || "credit").toLowerCase();
     const isCredit = paymentType === "credit";
     const isCashOrBank = paymentType === "cash" || paymentType === "bank";
+    let bankAccountId = null;
 
     /* ❌ ALLOW EDIT ONLY SAME DAY */
     const today = new Date().toISOString().slice(0, 10);
@@ -215,6 +235,19 @@ exports.updateSalesInvoice = async (req, res) => {
 
     if (!isCredit && !isCashOrBank) {
       return res.status(400).json({ message: "Invalid paymentType" });
+    }
+    if (paymentType === "bank") {
+      if (!bodyBankAccountId) {
+        return res.status(400).json({ message: "bankAccountId is required for bank payments" });
+      }
+      const bankAccount = await BankAccount.findOne({
+        _id: bodyBankAccountId,
+        companyId: req.user.companyId,
+      }).select("_id");
+      if (!bankAccount) {
+        return res.status(400).json({ message: "Invalid bank account" });
+      }
+      bankAccountId = bankAccount._id;
     }
 
     if (!partyId && isCredit) {
@@ -282,6 +315,7 @@ exports.updateSalesInvoice = async (req, res) => {
 
     invoice.partyId = partyId || undefined;
     invoice.paymentType = paymentType;
+    invoice.bankAccountId = bankAccountId;
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = tax;
@@ -327,6 +361,7 @@ exports.updateSalesInvoice = async (req, res) => {
         paymentType: "RECEIVED",
         amount: finalPaidAmount,
         paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+        bankAccountId,
         remarks: newParty ? "Payment updated during invoice edit" : "Walk-in payment updated during invoice edit",
         paymentDate: invoice.invoiceDate || new Date(),
       });
