@@ -98,4 +98,7 @@ app.use("/api/expenses", expenseRoutes);
 const bankAccountRoutes = require("./routes/bankAccountRoutes");
 app.use("/api/bank-accounts", bankAccountRoutes);
 
+const settingsRoutes = require("./routes/settingsRoutes");
+app.use("/api/settings", settingsRoutes);
+
 module.exports = app;

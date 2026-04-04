@@ -7,5 +7,7 @@ router.use(auth);
 
 router.get("/", controller.getBankAccounts);
 router.post("/", controller.createBankAccount);
+router.put("/:id", controller.updateBankAccount);
+router.delete("/:id", controller.deleteBankAccount);
 
 module.exports = router;

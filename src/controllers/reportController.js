@@ -264,6 +264,7 @@ exports.dailyReport = async (req, res) => {
         paymentType: String(invoice.paymentType || "cash").toLowerCase(),
         amount: Number(invoice.totalAmount || 0),
         billId: invoice._id,
+        bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
         bankAccountName: invoice.bankAccountId?.accountName || "-",
       })),
       ...purchases.map((invoice) => ({
@@ -273,6 +274,7 @@ exports.dailyReport = async (req, res) => {
         paymentType: String(invoice.paymentType || "cash").toLowerCase(),
         amount: Number(invoice.totalAmount || 0),
         billId: invoice._id,
+        bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
         bankAccountName: invoice.bankAccountId?.accountName || "-",
       })),
       ...expenses.map((expense) => ({
@@ -282,6 +284,7 @@ exports.dailyReport = async (req, res) => {
         paymentType: String(expense.paymentType || "cash").toLowerCase(),
         amount: Number(expense.amount || 0),
         billId: expense._id,
+        bankAccountId: expense.bankAccountId?._id || expense.bankAccountId || null,
         note: expense.note || "",
         bankAccountName: expense.bankAccountId?.accountName || "-",
       })),

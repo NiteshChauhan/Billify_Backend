@@ -2,6 +2,8 @@ const mongoose = require("mongoose");
 
 const companySchema = new mongoose.Schema({
   name: String,
+  mobile: String,
+  email: String,
   gstNumber: String,
   address: String,
   subscriptionExpiry: Date,

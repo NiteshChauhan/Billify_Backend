@@ -52,3 +52,34 @@ exports.login = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+exports.changePassword = async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({ message: "oldPassword and newPassword are required" });
+    }
+
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ message: "newPassword must be at least 6 characters" });
+    }
+
+    const user = await User.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const match = await bcrypt.compare(oldPassword, user.password);
+    if (!match) {
+      return res.status(400).json({ message: "Old password is incorrect" });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    res.json({ message: "Password changed successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to change password", error: err.message });
+  }
+};

@@ -3,6 +3,7 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
 const ReturnEntry = require("../models/Return");
+const Expense = require("../models/Expense");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const normalizePaymentType = (v) => {
@@ -237,21 +238,40 @@ exports.getLedgerTransactions = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const filterType = String(req.query.type || "all").toLowerCase();
+    const bankAccountId = req.query.bankAccountId || "";
     const { invoiceDateQuery, paymentDateQuery, returnDateQuery } = buildDateQueries(req);
+    const expenseDateQuery = returnDateQuery.returnDate ? { date: returnDateQuery.returnDate } : {};
 
-    const [purchases, sales, payments, returns] = await Promise.all([
-      PurchaseInvoice.find({ companyId, ...invoiceDateQuery }).select(
-        "invoiceDate totalAmount invoiceNo paymentType partyId _id",
+    const [purchases, sales, payments, returns, expenses] = await Promise.all([
+      PurchaseInvoice.find({
+        companyId,
+        ...invoiceDateQuery,
+        ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
+      }).select(
+        "invoiceDate totalAmount invoiceNo paymentType partyId bankAccountId _id",
       ),
-      SalesInvoice.find({ companyId, ...invoiceDateQuery }).select(
-        "invoiceDate totalAmount invoiceNo paymentType partyId _id",
+      SalesInvoice.find({
+        companyId,
+        ...invoiceDateQuery,
+        ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
+      }).select(
+        "invoiceDate totalAmount invoiceNo paymentType partyId bankAccountId _id",
       ),
-      Payment.find({ companyId, ...paymentDateQuery }).select(
-        "paymentDate amount paymentMode paymentType invoiceType invoiceId partyId _id",
+      Payment.find({
+        companyId,
+        ...paymentDateQuery,
+        ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
+      }).select(
+        "paymentDate amount paymentMode paymentType invoiceType invoiceId partyId bankAccountId _id",
       ),
       ReturnEntry.find({ companyId, ...returnDateQuery }).select(
         "returnDate returnType totalAmount billType billId returnNo partyId _id",
       ),
+      Expense.find({
+        companyId,
+        ...expenseDateQuery,
+        ...(filterType === "bank" && bankAccountId ? { paymentType: "bank", bankAccountId } : {}),
+      }).select("date title amount paymentType note partyId bankAccountId _id"),
     ]);
 
     const purchaseNoMap = new Map(purchases.map((p) => [String(p._id), p.invoiceNo || "-"]));
@@ -286,6 +306,7 @@ exports.getLedgerTransactions = async (req, res) => {
         partyId: p.partyId,
         partyName: partyName(p.partyId),
         paymentType: normalizePaymentType(p.paymentType),
+        bankAccountId: p.bankAccountId || null,
       });
     });
 
@@ -302,6 +323,7 @@ exports.getLedgerTransactions = async (req, res) => {
         partyId: s.partyId,
         partyName: partyName(s.partyId),
         paymentType: normalizePaymentType(s.paymentType),
+        bankAccountId: s.bankAccountId || null,
       });
     });
 
@@ -323,6 +345,7 @@ exports.getLedgerTransactions = async (req, res) => {
         partyId: p.partyId,
         partyName: partyName(p.partyId),
         paymentType: paymentModeToChannel(p.paymentMode),
+        bankAccountId: p.bankAccountId || null,
       });
     });
 
@@ -345,6 +368,24 @@ exports.getLedgerTransactions = async (req, res) => {
         partyId: r.partyId,
         partyName: partyName(r.partyId),
         paymentType: mappedPaymentType,
+        bankAccountId: null,
+      });
+    });
+
+    expenses.forEach((expense) => {
+      ledger.push({
+        date: expense.date,
+        type: "EXPENSE",
+        bill_no: "-",
+        debit: Number(expense.amount || 0),
+        credit: 0,
+        balance: 0,
+        billId: expense._id,
+        billType: "EXPENSE",
+        partyId: expense.partyId || null,
+        partyName: expense.title || "-",
+        paymentType: String(expense.paymentType || "cash").toLowerCase(),
+        bankAccountId: expense.bankAccountId || null,
       });
     });
 
@@ -352,6 +393,9 @@ exports.getLedgerTransactions = async (req, res) => {
     let filtered = ledger;
     if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
       filtered = ledger.filter((e) => e.paymentType === filterType);
+      if (filterType === "bank" && bankAccountId) {
+        filtered = filtered.filter((e) => String(e.bankAccountId || "") === String(bankAccountId));
+      }
     } else if (filterType === "party") {
       filtered = ledger.filter((e) => !!e.partyId);
     }

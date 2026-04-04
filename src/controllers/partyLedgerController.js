@@ -4,6 +4,7 @@ const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
 const Party = require("../models/Party");
 const ReturnEntry = require("../models/Return");
+const Expense = require("../models/Expense");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const isSameDay = (dateValue) => {
@@ -12,9 +13,10 @@ const isSameDay = (dateValue) => {
   return d === today;
 };
 
-const buildLedger = async ({ companyId, partyId, role, query }) => {
+const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) => {
   const invoiceDateQuery = query ? { invoiceDate: query } : {};
   const paymentDateQuery = query ? { paymentDate: query } : {};
+  const expenseDateQuery = query ? { date: query } : {};
 
   const normalizedRole = String(role || "").toLowerCase();
   const includeSupplier = !normalizedRole || normalizedRole === "all" || normalizedRole === "supplier";
@@ -24,25 +26,36 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
     normalizedRole === "customer" ||
     normalizedRole === "vendor";
 
-  const [purchases, sales, payments, returns] = await Promise.all([
+  const [purchases, sales, payments, returns, expenses] = await Promise.all([
     includeSupplier
-      ? PurchaseInvoice.find({ companyId, partyId, ...invoiceDateQuery }).select(
-          "invoiceDate totalAmount invoiceNo paymentType _id",
+      ? PurchaseInvoice.find({
+          companyId,
+          partyId,
+          ...invoiceDateQuery,
+          ...(bankAccountId ? { bankAccountId } : {}),
+        }).select(
+          "invoiceDate totalAmount invoiceNo paymentType bankAccountId _id",
         )
       : [],
     includeCustomer
-      ? SalesInvoice.find({ companyId, partyId, ...invoiceDateQuery }).select(
-          "invoiceDate totalAmount invoiceNo paymentType _id",
+      ? SalesInvoice.find({
+          companyId,
+          partyId,
+          ...invoiceDateQuery,
+          ...(bankAccountId ? { bankAccountId } : {}),
+        }).select(
+          "invoiceDate totalAmount invoiceNo paymentType bankAccountId _id",
         )
       : [],
     Payment.find({
       companyId,
       partyId,
+      ...(bankAccountId ? { bankAccountId } : {}),
       ...(includeSupplier && !includeCustomer ? { invoiceType: "PURCHASE" } : {}),
       ...(includeCustomer && !includeSupplier ? { invoiceType: "SALE" } : {}),
       ...paymentDateQuery,
     }).select(
-      "paymentDate amount paymentMode referenceNo paymentType invoiceType invoiceId _id",
+      "paymentDate amount paymentMode referenceNo paymentType invoiceType invoiceId bankAccountId _id",
     ),
     ReturnEntry.find({
       companyId,
@@ -51,6 +64,14 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       ...(includeSupplier && !includeCustomer ? { returnType: "PURCHASE_RETURN" } : {}),
       ...(includeCustomer && !includeSupplier ? { returnType: "SALE_RETURN" } : {}),
     }).select("returnDate returnType totalAmount billType billId returnNo"),
+    bankAccountId
+      ? Expense.find({
+          companyId,
+          paymentType: "bank",
+          bankAccountId,
+          ...expenseDateQuery,
+        }).select("date title amount paymentType note bankAccountId _id")
+      : [],
   ]);
 
   const ledger = [];
@@ -76,6 +97,7 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       particulars: `Purchase Invoice ${p.invoiceNo}`,
       bill_no: p.invoiceNo || "-",
       paymentType: (p.paymentType || "credit").toString().toLowerCase(),
+      bankAccountId: p.bankAccountId || null,
       partyId,
       debit: 0,
       credit: p.totalAmount,
@@ -92,6 +114,7 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       particulars: `Sales Invoice ${s.invoiceNo}`,
       bill_no: s.invoiceNo || "-",
       paymentType: (s.paymentType || "credit").toString().toLowerCase(),
+      bankAccountId: s.bankAccountId || null,
       partyId,
       debit: s.totalAmount,
       credit: 0,
@@ -113,6 +136,7 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       particulars: `Payment (${p.paymentMode})`,
       bill_no: invoiceNo,
       paymentType: String(p.paymentMode || "").toUpperCase() === "CASH" ? "cash" : "bank",
+      bankAccountId: p.bankAccountId || null,
       partyId,
       debit: isReceived ? 0 : p.amount, // paid
       credit: isReceived ? p.amount : 0, // received
@@ -135,11 +159,29 @@ const buildLedger = async ({ companyId, partyId, role, query }) => {
       particulars: `${isSaleReturn ? "Sale Return" : "Purchase Return"} ${returnBillNo}`,
       bill_no: returnBillNo,
       paymentType: mappedPaymentType,
+      bankAccountId: null,
       partyId,
       debit: isSaleReturn ? 0 : r.totalAmount, // purchase return
       credit: isSaleReturn ? r.totalAmount : 0, // sale return
       billId: r.billId,
       billType: r.billType,
+      canEditBill: false,
+    });
+  });
+
+  expenses.forEach((expense) => {
+    ledger.push({
+      date: expense.date,
+      type: "EXPENSE",
+      particulars: `Expense ${expense.title}`,
+      bill_no: "-",
+      paymentType: String(expense.paymentType || "cash").toLowerCase(),
+      bankAccountId: expense.bankAccountId || null,
+      partyId: null,
+      debit: Number(expense.amount || 0),
+      credit: 0,
+      billId: expense._id,
+      billType: "EXPENSE",
       canEditBill: false,
     });
   });
@@ -158,6 +200,7 @@ exports.getPartyLedger = async (req, res) => {
       filterType === "customer" || filterType === "supplier"
         ? filterType
         : rawRole;
+    const bankAccountId = req.query.bankAccountId || "";
 
     const party = await Party.findOne({ _id: partyId, companyId });
     if (!party) {
@@ -174,10 +217,14 @@ exports.getPartyLedger = async (req, res) => {
       partyId,
       role,
       query,
+      bankAccountId,
     });
 
     if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
       ledger = ledger.filter((e) => e.paymentType === filterType);
+      if (filterType === "bank" && bankAccountId) {
+        ledger = ledger.filter((e) => String(e.bankAccountId || "") === String(bankAccountId));
+      }
     } else if (filterType === "party") {
       ledger = ledger.filter((e) => !!e.partyId);
     }
@@ -208,6 +255,7 @@ exports.exportPartyLedgerPdf = async (req, res) => {
       filterType === "customer" || filterType === "supplier"
         ? filterType
         : rawRole;
+    const bankAccountId = req.query.bankAccountId || "";
 
     const party = await Party.findOne({ _id: partyId, companyId });
     if (!party) {
@@ -219,10 +267,13 @@ exports.exportPartyLedgerPdf = async (req, res) => {
       ? { $gte: range.fromDate, $lte: range.toDate }
       : null;
 
-    let ledger = await buildLedger({ companyId, partyId, role, query });
+    let ledger = await buildLedger({ companyId, partyId, role, query, bankAccountId });
 
     if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
       ledger = ledger.filter((e) => e.paymentType === filterType);
+      if (filterType === "bank" && bankAccountId) {
+        ledger = ledger.filter((e) => String(e.bankAccountId || "") === String(bankAccountId));
+      }
     } else if (filterType === "party") {
       ledger = ledger.filter((e) => !!e.partyId);
     }
