@@ -85,6 +85,10 @@ app.use("/api/invoice-pdf", require("../src/routes/invoicePdfRoutes"));
 app.use("/api/stock-ledger", require("../src/routes/stockLedgerRoutes"));
 app.use("/api/profit", require("../src/routes/profitRoutes"));
 app.use("/api/dashboard", require("../src/routes/dashboardRoutes"));
+app.use("/api/company-balance", require("../src/routes/companyBalanceRoutes"));
+app.use("/api/expenses", require("../src/routes/expenseRoutes"));
+app.use("/api/bank-accounts", require("../src/routes/bankAccountRoutes"));
+app.use("/api/settings", require("../src/routes/settingsRoutes"));
 
 /* ================= 404 ================= */
 app.use((req, res) => {
