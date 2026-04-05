@@ -12,6 +12,7 @@ const productSchema = new mongoose.Schema({
   openingStock: { type: Number, default: 0 },
   openingRate: { type: Number, default: 0 },
   lastPurchaseRate: { type: Number, default: 0 },
+  lastSalePrice: { type: Number, default: 0 },
   attributes: Object,
   createdAt: { type: Date, default: Date.now }
 });

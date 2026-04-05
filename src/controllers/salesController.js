@@ -3,6 +3,7 @@ const StockLedger = require("../models/StockLedger");
 const Party = require("../models/Party");
 const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
+const Product = require("../models/Product");
 const { validateStockForSale } = require("../utils/stockValidation");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
@@ -136,6 +137,10 @@ exports.createSalesInvoice = async (req, res) => {
         referenceType: "SALES_INVOICE",
         referenceId: invoice._id,
       });
+      await Product.updateOne(
+        { _id: item.productId, companyId: req.user.companyId },
+        { $set: { lastSalePrice: Number(item.rate || 0) } },
+      );
     }
 
     /* ================= UPDATE PARTY BALANCE ================= */
@@ -344,6 +349,10 @@ exports.updateSalesInvoice = async (req, res) => {
         referenceType: "SALES_INVOICE",
         referenceId: invoice._id,
       });
+      await Product.updateOne(
+        { _id: item.productId, companyId: req.user.companyId },
+        { $set: { lastSalePrice: Number(item.rate || 0) } },
+      );
     }
 
     /* ================= UPDATE PARTY BALANCE AGAIN ================= */

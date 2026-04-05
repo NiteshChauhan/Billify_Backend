@@ -24,6 +24,7 @@ exports.createProduct = async (req, res) => {
       openingStock: Number(openingStock || 0),
       openingRate: Number(openingRate || 0),
       lastPurchaseRate: Number(req.body.lastPurchaseRate || openingRate || 0),
+      lastSalePrice: Number(req.body.lastSalePrice || price || 0),
     });
 
     if (Number(openingStock || 0) > 0) {
@@ -50,11 +51,86 @@ exports.createProduct = async (req, res) => {
 /* ================= GET ALL PRODUCTS ================= */
 exports.getProducts = async (req, res) => {
   try {
-    const products = await Product.find({
-      companyId: req.user.companyId
-    }).sort({ createdAt: -1 });
+    const companyId = req.user.companyId;
+    const pageParam = Number(req.query.page || 0);
+    const limitParam = Number(req.query.limit || 0);
+    const isPaginated = pageParam > 0 || limitParam > 0;
+    const page = pageParam > 0 ? pageParam : 1;
+    const limit = limitParam > 0 ? Math.min(limitParam, 100) : 20;
+    const filter = { companyId };
 
-    res.json(products);
+    const [products, total] = await Promise.all([
+      Product.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(isPaginated ? (page - 1) * limit : 0)
+        .limit(isPaginated ? limit : 0)
+        .lean(),
+      Product.countDocuments(filter),
+    ]);
+
+    const productIds = products.map((product) => product._id);
+    const stockSummary = productIds.length
+      ? await StockLedger.aggregate([
+          { $match: { companyId, productId: { $in: productIds } } },
+          {
+            $group: {
+              _id: "$productId",
+              currentStock: {
+                $sum: {
+                  $switch: {
+                    branches: [
+                      { case: { $in: ["$type", ["OPENING", "PURCHASE", "SALE_RETURN"]] }, then: "$quantity" },
+                      { case: { $in: ["$type", ["SALE", "PURCHASE_RETURN"]] }, then: { $multiply: ["$quantity", -1] } },
+                    ],
+                    default: 0,
+                  },
+                },
+              },
+              totalPurchaseQty: {
+                $sum: {
+                  $cond: [{ $eq: ["$type", "PURCHASE"] }, "$quantity", 0],
+                },
+              },
+            },
+          },
+        ])
+      : [];
+
+    const stockMap = new Map(
+      stockSummary.map((row) => [
+        String(row._id),
+        {
+          currentStock: Number(row.currentStock || 0),
+          totalPurchaseQty: Number(row.totalPurchaseQty || 0),
+        },
+      ]),
+    );
+
+    const productRows = products.map((product) => {
+      const summary = stockMap.get(String(product._id)) || {
+        currentStock: Number(product.openingStock || 0),
+        totalPurchaseQty: 0,
+      };
+      return {
+        ...product,
+        stock: summary.currentStock,
+        inStock: summary.currentStock,
+        totalStock: Number(product.openingStock || 0) + Number(summary.totalPurchaseQty || 0),
+        lastPurchasePrice: Number(product.lastPurchaseRate || 0),
+        lastSalePrice: Number(product.lastSalePrice || 0),
+      };
+    });
+
+    if (!isPaginated) {
+      return res.json(productRows);
+    }
+
+    res.json({
+      data: productRows,
+      total,
+      page,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
   } catch (err) {
     res.status(500).json({
       message: "Failed to load products"
@@ -134,6 +210,7 @@ exports.updateProduct = async (req, res) => {
         openingStock: incomingOpeningStock,
         openingRate: incomingOpeningRate,
         lastPurchaseRate: Number(req.body.lastPurchaseRate ?? existing.lastPurchaseRate ?? incomingOpeningRate),
+        lastSalePrice: Number(req.body.lastSalePrice ?? existing.lastSalePrice ?? existing.price ?? 0),
       },
       { new: true }
     );
@@ -252,7 +329,7 @@ exports.bulkUploadProducts = async (req, res) => {
     }
 
     let insertedCount = 0;
-    let skippedCount = 0;
+    const skipped = [];
     const errors = [];
 
     for (let index = 1; index < lines.length; index += 1) {
@@ -260,14 +337,13 @@ exports.bulkUploadProducts = async (req, res) => {
       const name = values[nameIndex] || "";
       const stock = Number(values[stockIndex] || 0);
       const price = Number(values[priceIndex] || 0);
-      const rowNumber = index + 1;
 
       if (!name) {
-        errors.push({ row: rowNumber, message: "name is required" });
+        skipped.push({ name: `Row ${index + 1}`, reason: "missing required field: name" });
         continue;
       }
       if (Number.isNaN(stock) || Number.isNaN(price)) {
-        errors.push({ row: rowNumber, message: "stock and price must be numeric" });
+        errors.push({ name, error: "invalid number in stock or price" });
         continue;
       }
 
@@ -277,39 +353,45 @@ exports.bulkUploadProducts = async (req, res) => {
       }).select("_id");
 
       if (existing) {
-        skippedCount += 1;
+        skipped.push({ name, reason: "duplicate product name" });
         continue;
       }
 
-      const product = await Product.create({
-        companyId: req.user.companyId,
-        name,
-        sku: `CSV-${Date.now()}-${index}`,
-        price,
-        openingStock: stock,
-        openingRate: price,
-        lastPurchaseRate: price,
-      });
-
-      if (stock > 0) {
-        await StockLedger.create({
+      try {
+        const product = await Product.create({
           companyId: req.user.companyId,
-          productId: product._id,
-          type: "OPENING",
-          quantity: stock,
-          rate: price,
-          referenceType: "OPENING_STOCK",
-          referenceId: product._id,
+          name,
+          sku: `CSV-${Date.now()}-${index}`,
+          price,
+          openingStock: stock,
+          openingRate: price,
+          lastPurchaseRate: price,
+          lastSalePrice: price,
         });
-      }
 
-      insertedCount += 1;
+        if (stock > 0) {
+          await StockLedger.create({
+            companyId: req.user.companyId,
+            productId: product._id,
+            type: "OPENING",
+            quantity: stock,
+            rate: price,
+            referenceType: "OPENING_STOCK",
+            referenceId: product._id,
+          });
+        }
+
+        insertedCount += 1;
+      } catch (error) {
+        errors.push({ name, error: error.message || "DB error" });
+      }
     }
 
     res.json({
       insertedCount,
-      skippedCount,
+      skippedCount: skipped.length,
       errorCount: errors.length,
+      skipped,
       errors,
     });
   } catch (err) {
