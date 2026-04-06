@@ -55,7 +55,7 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
       ...(includeCustomer && !includeSupplier ? { invoiceType: "SALE" } : {}),
       ...paymentDateQuery,
     }).select(
-      "paymentDate amount paymentMode referenceNo paymentType invoiceType invoiceId bankAccountId _id",
+      "paymentDate amount paymentMode referenceNo paymentType invoiceType invoiceId bankAccountId adjustType _id",
     ),
     ReturnEntry.find({
       companyId,
@@ -127,20 +127,25 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
   payments.forEach((p) => {
     const isReceived = p.paymentType === "RECEIVED" || p.invoiceType === "SALE";
     const invoiceNo =
-      p.invoiceType === "PURCHASE"
+      p.invoiceType === "OPENING"
+        ? "-"
+        : p.invoiceType === "PURCHASE"
         ? purchaseMap[String(p.invoiceId)] || "-"
         : salesMap[String(p.invoiceId)] || "-";
     ledger.push({
       date: p.paymentDate,
       type: "PAYMENT",
-      particulars: `Payment (${p.paymentMode})`,
+      particulars:
+        p.adjustType === "opening"
+          ? "Payment (Opening)"
+          : `Payment (${invoiceNo !== "-" ? invoiceNo : p.paymentMode})`,
       bill_no: invoiceNo,
       paymentType: String(p.paymentMode || "").toUpperCase() === "CASH" ? "cash" : "bank",
       bankAccountId: p.bankAccountId || null,
       partyId,
       debit: isReceived ? 0 : p.amount, // paid
       credit: isReceived ? p.amount : 0, // received
-      billId: p.invoiceId,
+      billId: p.invoiceId || null,
       billType: p.invoiceType,
       canEditBill: false,
     });
@@ -190,6 +195,14 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
   return ledger;
 };
 
+const openingBalanceEffect = (party) => {
+  const openingBalance = Number(party?.openingBalance || 0);
+  if (!(openingBalance > 0)) return 0;
+  return String(party?.openingType || "receivable").toLowerCase() === "payable"
+    ? -openingBalance
+    : openingBalance;
+};
+
 exports.getPartyLedger = async (req, res) => {
   try {
     const { partyId } = req.params;
@@ -229,7 +242,25 @@ exports.getPartyLedger = async (req, res) => {
       ledger = ledger.filter((e) => !!e.partyId);
     }
 
-    let balance = party.openingBalance || 0;
+    const openingEffect = openingBalanceEffect(party);
+    if (Number(party.openingBalance || 0) > 0) {
+      ledger.unshift({
+        date: party.createdAt,
+        type: "OPENING",
+        particulars: "Opening Balance",
+        bill_no: "-",
+        paymentType: "opening",
+        bankAccountId: null,
+        partyId,
+        debit: openingEffect > 0 ? Math.abs(openingEffect) : 0,
+        credit: openingEffect < 0 ? Math.abs(openingEffect) : 0,
+        billId: null,
+        billType: "OPENING",
+        canEditBill: false,
+      });
+    }
+
+    let balance = 0;
     ledger = ledger.map((entry) => {
       balance = balance + entry.debit - entry.credit;
       return { ...entry, balance };
@@ -277,7 +308,24 @@ exports.exportPartyLedgerPdf = async (req, res) => {
     } else if (filterType === "party") {
       ledger = ledger.filter((e) => !!e.partyId);
     }
-    let balance = party.openingBalance || 0;
+    const openingEffect = openingBalanceEffect(party);
+    if (Number(party.openingBalance || 0) > 0) {
+      ledger.unshift({
+        date: party.createdAt,
+        type: "OPENING",
+        particulars: "Opening Balance",
+        bill_no: "-",
+        paymentType: "opening",
+        bankAccountId: null,
+        partyId,
+        debit: openingEffect > 0 ? Math.abs(openingEffect) : 0,
+        credit: openingEffect < 0 ? Math.abs(openingEffect) : 0,
+        billId: null,
+        billType: "OPENING",
+        canEditBill: false,
+      });
+    }
+    let balance = 0;
     ledger = ledger.map((entry) => {
       balance = balance + entry.debit - entry.credit;
       return { ...entry, balance };
@@ -296,7 +344,7 @@ exports.exportPartyLedgerPdf = async (req, res) => {
     doc.fontSize(16).text(`Party Ledger${titleSuffix}`, { align: "center" });
     doc.moveDown(0.5);
     doc.fontSize(11).text(`Party: ${party.name}`);
-    doc.text(`Opening Balance: ${party.openingBalance || 0}`);
+    doc.text(`Opening Balance: ${party.openingBalance || 0} (${party.openingType || "receivable"})`);
     doc.text(`Closing Balance: ${balance}`);
     doc.moveDown();
 

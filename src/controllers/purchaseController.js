@@ -123,6 +123,7 @@ exports.createPurchaseInvoice = async (req, res) => {
       tax,
       totalAmount,
       paidAmount: finalPaidAmount,
+      pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
       status:
         finalPaidAmount >= totalAmount
           ? "PAID"
@@ -354,6 +355,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     }
 
     invoice.paidAmount = finalPaidAmount;
+    invoice.pendingAmount = Math.max(0, totalAmount - finalPaidAmount);
     invoice.status =
       finalPaidAmount >= totalAmount
         ? "PAID"

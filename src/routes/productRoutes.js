@@ -8,6 +8,7 @@ router.use(auth);
 router.post("/", productController.createProduct);
 router.post("/bulk-upload", productController.bulkUploadProducts);
 router.get("/sample-csv", productController.downloadSampleCsv);
+router.get("/capital-summary", productController.getCapitalSummary);
 router.get("/", productController.getProducts);
 router.get("/:id/last-rate", productController.getLastRate);
 router.get("/:id/history", productController.getProductHistory);

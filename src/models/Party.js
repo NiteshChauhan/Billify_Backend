@@ -23,6 +23,12 @@ const partySchema = new mongoose.Schema(
     ],
 
     openingBalance: { type: Number, default: 0 },
+    remainingOpeningBalance: { type: Number, default: 0 },
+    openingType: {
+      type: String,
+      enum: ["receivable", "payable"],
+      default: "receivable",
+    },
     balance: { type: Number, default: 0 },
 
     isActive: { type: Boolean, default: true },

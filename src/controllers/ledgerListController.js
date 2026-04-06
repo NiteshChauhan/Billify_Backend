@@ -262,7 +262,7 @@ exports.getLedgerTransactions = async (req, res) => {
         ...paymentDateQuery,
         ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
       }).select(
-        "paymentDate amount paymentMode paymentType invoiceType invoiceId partyId bankAccountId _id",
+        "paymentDate amount paymentMode paymentType invoiceType invoiceId partyId bankAccountId adjustType _id",
       ),
       ReturnEntry.find({ companyId, ...returnDateQuery }).select(
         "returnDate returnType totalAmount billType billId returnNo partyId _id",
@@ -330,7 +330,9 @@ exports.getLedgerTransactions = async (req, res) => {
     payments.forEach((p) => {
       const isReceived = p.paymentType === "RECEIVED" || p.invoiceType === "SALE";
       const invoiceNo =
-        p.invoiceType === "PURCHASE"
+        p.invoiceType === "OPENING"
+          ? "-"
+          : p.invoiceType === "PURCHASE"
           ? purchaseNoMap.get(String(p.invoiceId)) || "-"
           : salesNoMap.get(String(p.invoiceId)) || "-";
       ledger.push({

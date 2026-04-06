@@ -196,7 +196,7 @@ exports.dailyReport = async (req, res) => {
     const billTypeFilter = String(req.query.type || "all").toLowerCase();
     const search = String(req.query.search || "").trim().toLowerCase();
     const validPaymentTypes = ["all", "cash", "bank"];
-    const validBillTypes = ["all", "sale", "purchase"];
+    const validBillTypes = ["all", "sale", "purchase", "payment"];
 
     if (!validPaymentTypes.includes(paymentTypeFilter)) {
       return res.status(400).json({ error: "Invalid paymentType" });
@@ -221,7 +221,14 @@ exports.dailyReport = async (req, res) => {
       invoiceDate: { $lt: dayStart },
     };
 
-    const [sales, purchases, previousSales, previousPurchases] = await Promise.all([
+    const paymentModeQuery =
+      paymentTypeFilter === "all"
+        ? { $in: ["CASH", "UPI", "BANK", "CHEQUE"] }
+        : paymentTypeFilter === "cash"
+        ? "CASH"
+        : { $in: ["UPI", "BANK", "CHEQUE"] };
+
+    const [sales, purchases, payments, previousSales, previousPurchases, previousPayments] = await Promise.all([
       SalesInvoice.find(
         billTypeFilter === "purchase" ? { _id: null } : dailyInvoiceQuery,
       )
@@ -234,8 +241,25 @@ exports.dailyReport = async (req, res) => {
         .populate("partyId", "name")
         .populate("bankAccountId", "accountName")
         .sort({ invoiceDate: 1, createdAt: 1 }),
+      Payment.find(
+        billTypeFilter !== "all" && billTypeFilter !== "payment"
+          ? { _id: null }
+          : {
+              companyId,
+              paymentDate: { $gte: dayStart, $lte: dayEnd },
+              paymentMode: paymentModeQuery,
+            },
+      )
+        .populate("partyId", "name")
+        .populate("bankAccountId", "accountName")
+        .sort({ paymentDate: 1, createdAt: 1 }),
       SalesInvoice.find(previousInvoiceQuery).select("totalAmount"),
       PurchaseInvoice.find(previousInvoiceQuery).select("totalAmount"),
+      Payment.find({
+        companyId,
+        paymentDate: { $lt: dayStart },
+        paymentMode: paymentModeQuery,
+      }).select("amount paymentType"),
     ]);
 
     const expenses = await Expense.find({
@@ -277,6 +301,21 @@ exports.dailyReport = async (req, res) => {
         bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
         bankAccountName: invoice.bankAccountId?.accountName || "-",
       })),
+      ...payments.map((payment) => ({
+        date: payment.paymentDate,
+        type: "payment",
+        partyName: payment.partyId?.name || "Cash",
+        paymentType: String(payment.paymentMode || "").toUpperCase() === "CASH" ? "cash" : "bank",
+        amount: Number(payment.amount || 0),
+        billId: payment.invoiceId || payment._id,
+        paymentId: payment._id,
+        paymentDirection: String(payment.paymentType || "RECEIVED").toLowerCase(),
+        invoiceType: payment.invoiceType || "",
+        referenceNo: payment.referenceNo || "",
+        bankAccountId: payment.bankAccountId?._id || payment.bankAccountId || null,
+        note: payment.remarks || "",
+        bankAccountName: payment.bankAccountId?.accountName || "-",
+      })),
       ...expenses.map((expense) => ({
         date: expense.date,
         type: "expense",
@@ -295,6 +334,12 @@ exports.dailyReport = async (req, res) => {
 
     const previousSalesTotal = previousSales.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
     const previousPurchaseTotal = previousPurchases.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
+    const previousPaymentReceived = previousPayments
+      .filter((row) => String(row.paymentType || "").toUpperCase() === "RECEIVED")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const previousPaymentPaid = previousPayments
+      .filter((row) => String(row.paymentType || "").toUpperCase() === "PAID")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
     const previousExpenseTotal = await Expense.aggregate([
       {
         $match: {
@@ -307,7 +352,11 @@ exports.dailyReport = async (req, res) => {
     ]);
     const openingBalance =
       manualOpening?.openingBalance ??
-      (previousSalesTotal - previousPurchaseTotal - Number(previousExpenseTotal[0]?.total || 0));
+      (previousSalesTotal -
+        previousPurchaseTotal +
+        previousPaymentReceived -
+        previousPaymentPaid -
+        Number(previousExpenseTotal[0]?.total || 0));
 
     const totalSales = rows
       .filter((row) => row.type === "sale")
@@ -315,10 +364,22 @@ exports.dailyReport = async (req, res) => {
     const totalPurchase = rows
       .filter((row) => row.type === "purchase")
       .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalPaymentReceived = rows
+      .filter((row) => row.type === "payment" && row.paymentDirection === "received")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalPaymentPaid = rows
+      .filter((row) => row.type === "payment" && row.paymentDirection === "paid")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
     const totalExpenses = rows
       .filter((row) => row.type === "expense")
       .reduce((sum, row) => sum + Number(row.amount || 0), 0);
-    const closingBalance = openingBalance + totalSales - totalPurchase - totalExpenses;
+    const closingBalance =
+      openingBalance +
+      totalSales -
+      totalPurchase +
+      totalPaymentReceived -
+      totalPaymentPaid -
+      totalExpenses;
 
     res.json({
       rows,
@@ -326,6 +387,8 @@ exports.dailyReport = async (req, res) => {
         openingBalance,
         totalSales,
         totalPurchase,
+        totalPaymentReceived,
+        totalPaymentPaid,
         totalExpenses,
         closingBalance,
         isManualOpeningBalance: Boolean(manualOpening),

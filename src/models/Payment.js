@@ -38,15 +38,21 @@ const paymentSchema = new mongoose.Schema(
       default: "RECEIVED",
     },
 
+    adjustType: {
+      type: String,
+      enum: ["opening", "bill"],
+      default: "bill",
+    },
+
     invoiceType: {
       type: String,
-      enum: ["PURCHASE", "SALE"],
+      enum: ["PURCHASE", "SALE", "OPENING"],
       required: true,
     },
 
     invoiceId: {
       type: mongoose.Schema.Types.ObjectId,
-      required: true,
+      required: false,
     },
 
     referenceNo: String,

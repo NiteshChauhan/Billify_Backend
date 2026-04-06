@@ -14,6 +14,7 @@ router.get("/", partyController.getAllParties);
 router.get("/suppliers", partyController.getSuppliers);
 router.get("/vendors", partyController.getVendors);
 router.get("/customers", partyController.getCustomers);
+router.get("/:id/outstanding", partyController.getPartyOutstanding);
 router.get("/:id", partyController.getPartyById);
 router.get("/:id/ledger", (req, res) => {
   req.params.partyId = req.params.id;

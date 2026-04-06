@@ -4,6 +4,7 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const ReturnEntry = require("../models/Return");
 const Party = require("../models/Party");
+const mongoose = require("mongoose");
 
 /* ================= CREATE PRODUCT ================= */
 exports.createProduct = async (req, res) => {
@@ -301,6 +302,85 @@ exports.downloadSampleCsv = async (req, res) => {
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", 'attachment; filename="products-sample.csv"');
   res.send("name,stock,price\nProduct A,10,100\nProduct B,5,200\n");
+};
+
+exports.getCapitalSummary = async (req, res) => {
+  try {
+    const companyId = new mongoose.Types.ObjectId(String(req.user.companyId));
+    const [productsCount, stockSummary] = await Promise.all([
+      Product.countDocuments({ companyId }),
+      StockLedger.aggregate([
+        { $match: { companyId } },
+        {
+          $group: {
+            _id: "$productId",
+            currentStock: {
+              $sum: {
+                $switch: {
+                  branches: [
+                    {
+                      case: { $in: ["$type", ["OPENING", "PURCHASE", "SALE_RETURN"]] },
+                      then: { $convert: { input: "$quantity", to: "double", onError: 0, onNull: 0 } },
+                    },
+                    {
+                      case: { $in: ["$type", ["SALE", "PURCHASE_RETURN"]] },
+                      then: {
+                        $multiply: [
+                          { $convert: { input: "$quantity", to: "double", onError: 0, onNull: 0 } },
+                          -1,
+                        ],
+                      },
+                    },
+                  ],
+                  default: 0,
+                },
+              },
+            },
+          },
+        },
+        {
+          $lookup: {
+            from: "products",
+            localField: "_id",
+            foreignField: "_id",
+            as: "product",
+          },
+        },
+        { $unwind: "$product" },
+        {
+          $addFields: {
+            stockNum: { $convert: { input: "$currentStock", to: "double", onError: 0, onNull: 0 } },
+            priceNum: { $convert: { input: "$product.price", to: "double", onError: 0, onNull: 0 } },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            totalStockQty: { $sum: "$stockNum" },
+            totalCapital: {
+              $sum: { $multiply: ["$stockNum", "$priceNum"] },
+            },
+          },
+        },
+      ]),
+    ]);
+
+    const firstProduct = await Product.findOne({ companyId }).select("name price openingStock").lean();
+    if (process.env.NODE_ENV !== "production") {
+      console.log("Capital summary debug:", firstProduct, {
+        priceType: typeof firstProduct?.price,
+        openingStockType: typeof firstProduct?.openingStock,
+      });
+    }
+
+    res.json({
+      totalProducts: productsCount,
+      totalStockQty: Number(stockSummary[0]?.totalStockQty || 0),
+      totalCapital: Number(stockSummary[0]?.totalCapital || 0),
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to load capital summary", error: err.message });
+  }
 };
 
 exports.bulkUploadProducts = async (req, res) => {

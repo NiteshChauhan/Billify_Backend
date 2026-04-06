@@ -1,4 +1,8 @@
 const Party = require("../models/Party");
+const SalesInvoice = require("../models/SalesInvoice");
+const PurchaseInvoice = require("../models/PurchaseInvoice");
+const Payment = require("../models/Payment");
+const ReturnEntry = require("../models/Return");
 const normalizeRoles = (roles = []) => {
   const list = Array.isArray(roles) ? roles : [roles];
   return [...new Set(
@@ -12,7 +16,7 @@ const normalizeRoles = (roles = []) => {
 /* ================= CREATE PARTY ================= */
 exports.createParty = async (req, res) => {
   try {
-    const { name, openingBalance } = req.body;
+    const { name, openingBalance, openingType } = req.body;
     const roles = normalizeRoles(req.body.roles || req.body.role || req.body.type);
 
     if (!roles || roles.length === 0) {
@@ -37,12 +41,18 @@ exports.createParty = async (req, res) => {
     }
 
     // Create new party
+    const normalizedOpeningBalance = Number(openingBalance || 0);
+    const normalizedOpeningType = String(openingType || "receivable").toLowerCase() === "payable" ? "payable" : "receivable";
+
     party = await Party.create({
       companyId: req.user.companyId,
       name: name.trim(),
       ...req.body,
       roles,
-      openingBalance: openingBalance || 0,
+      openingBalance: normalizedOpeningBalance,
+      remainingOpeningBalance: normalizedOpeningBalance,
+      openingType: normalizedOpeningType,
+      balance: normalizedOpeningBalance,
       isActive: true,
     });
 
@@ -80,6 +90,140 @@ exports.getPartyById = async (req, res) => {
     }
 
     res.json(party);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+exports.getPartyOutstanding = async (req, res) => {
+  try {
+    const party = await Party.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isActive: true,
+    });
+
+    if (!party) {
+      return res.status(404).json({ message: "Party not found" });
+    }
+
+    const [sales, purchases, payments, returns] = await Promise.all([
+      SalesInvoice.find({ companyId: req.user.companyId, partyId: party._id })
+        .select("invoiceNo invoiceDate totalAmount paidAmount pendingAmount")
+        .sort({ invoiceDate: 1, createdAt: 1 }),
+      PurchaseInvoice.find({ companyId: req.user.companyId, partyId: party._id })
+        .select("invoiceNo invoiceDate totalAmount paidAmount pendingAmount")
+        .sort({ invoiceDate: 1, createdAt: 1 }),
+      Payment.find({ companyId: req.user.companyId, partyId: party._id })
+        .select("amount paymentType invoiceType invoiceId adjustType"),
+      ReturnEntry.find({ companyId: req.user.companyId, partyId: party._id })
+        .select("billId billType returnType totalAmount"),
+    ]);
+
+    const paymentTotalsByInvoice = new Map();
+    let openingPaid = 0;
+    payments.forEach((payment) => {
+      const amount = Number(payment.amount || 0);
+      if (payment.adjustType === "opening" || payment.invoiceType === "OPENING") {
+        openingPaid += amount;
+        return;
+      }
+      if (!payment.invoiceId) return;
+      const key = `${payment.invoiceType}:${String(payment.invoiceId)}`;
+      paymentTotalsByInvoice.set(key, Number(paymentTotalsByInvoice.get(key) || 0) + amount);
+    });
+
+    const returnTotalsByInvoice = new Map();
+    returns.forEach((entry) => {
+      if (!entry.billId || !entry.billType) return;
+      const key = `${entry.billType}:${String(entry.billId)}`;
+      returnTotalsByInvoice.set(key, Number(returnTotalsByInvoice.get(key) || 0) + Number(entry.totalAmount || 0));
+    });
+
+    const items = [];
+    const openingBalance = Number(party.openingBalance || 0);
+    const openingDirection =
+      String(party.openingType || "receivable").toLowerCase() === "payable" ? -1 : 1;
+    const openingDue = Math.max(0, openingBalance - openingPaid);
+
+    console.log("[Outstanding] Party:", String(party._id));
+    console.log("[Outstanding] Opening:", openingBalance);
+    console.log("[Outstanding] Opening Paid:", openingPaid);
+
+    if (openingDue > 0) {
+      items.push({
+        id: `opening-${party._id}`,
+        type: "opening",
+        refId: String(party._id),
+        refNo: "Opening Balance",
+        date: party.createdAt,
+        totalAmount: openingBalance,
+        paidAmount: openingPaid,
+        pendingAmount: openingDue,
+      });
+    }
+
+    sales.forEach((invoice) => {
+      const invoiceTotal = Number(invoice.totalAmount || 0);
+      const paidAmount = Number(
+        paymentTotalsByInvoice.get(`SALE:${String(invoice._id)}`) ?? invoice.paidAmount ?? 0,
+      );
+      const returnAmount = Number(returnTotalsByInvoice.get(`SALE:${String(invoice._id)}`) || 0);
+      const pendingAmount = Math.max(0, invoiceTotal - paidAmount - returnAmount);
+      if (pendingAmount > 0) {
+        items.push({
+          id: `sale-${invoice._id}`,
+          type: "sale",
+          refId: String(invoice._id),
+          refNo: invoice.invoiceNo || "-",
+          date: invoice.invoiceDate,
+          totalAmount: invoiceTotal,
+          paidAmount,
+          returnAmount,
+          pendingAmount,
+        });
+      }
+    });
+
+    purchases.forEach((invoice) => {
+      const invoiceTotal = Number(invoice.totalAmount || 0);
+      const paidAmount = Number(
+        paymentTotalsByInvoice.get(`PURCHASE:${String(invoice._id)}`) ?? invoice.paidAmount ?? 0,
+      );
+      const returnAmount = Number(returnTotalsByInvoice.get(`PURCHASE:${String(invoice._id)}`) || 0);
+      const pendingAmount = Math.max(0, invoiceTotal - paidAmount - returnAmount);
+      if (pendingAmount > 0) {
+        items.push({
+          id: `purchase-${invoice._id}`,
+          type: "purchase",
+          refId: String(invoice._id),
+          refNo: invoice.invoiceNo || "-",
+          date: invoice.invoiceDate,
+          totalAmount: invoiceTotal,
+          paidAmount,
+          returnAmount,
+          pendingAmount,
+        });
+      }
+    });
+
+    const salesDue = items
+      .filter((item) => item.type === "sale")
+      .reduce((sum, item) => sum + Number(item.pendingAmount || 0), 0);
+    const purchaseDue = items
+      .filter((item) => item.type === "purchase")
+      .reduce((sum, item) => sum + Number(item.pendingAmount || 0), 0);
+    const totalDue = Math.max(0, openingDirection * openingDue + salesDue - purchaseDue);
+
+    console.log("[Outstanding] Sales:", salesDue);
+    console.log("[Outstanding] Purchases:", purchaseDue);
+    console.log("[Outstanding] Total Due:", totalDue);
+
+    res.json({
+      partyId: String(party._id),
+      totalDue,
+      items,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -137,6 +281,29 @@ exports.updateParty = async (req, res) => {
     if (payload.roles || payload.role || payload.type) {
       payload.roles = normalizeRoles(payload.roles || payload.role || payload.type);
     }
+
+    const existing = await Party.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+    });
+
+    if (!existing) {
+      return res.status(404).json({ message: "Party not found" });
+    }
+
+    const nextOpeningBalance = Number(payload.openingBalance ?? existing.openingBalance ?? 0);
+    const previousOpeningBalance = Number(existing.openingBalance || 0);
+    payload.openingBalance = nextOpeningBalance;
+    payload.remainingOpeningBalance =
+      payload.remainingOpeningBalance !== undefined
+        ? Number(payload.remainingOpeningBalance || 0)
+        : Number(existing.remainingOpeningBalance ?? existing.openingBalance ?? 0) +
+          (nextOpeningBalance - previousOpeningBalance);
+    payload.openingType =
+      String(payload.openingType || existing.openingType || "receivable").toLowerCase() === "payable"
+        ? "payable"
+        : "receivable";
+    payload.balance = Number(existing.balance || 0) + (nextOpeningBalance - previousOpeningBalance);
 
     const party = await Party.findOneAndUpdate(
       {

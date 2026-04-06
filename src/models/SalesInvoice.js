@@ -47,6 +47,7 @@ const salesInvoiceSchema = new mongoose.Schema(
     totalAmount: Number,
 
     paidAmount: { type: Number, default: 0 },
+    pendingAmount: { type: Number, default: 0 },
     status: {
       type: String,
       enum: ["PAID", "PARTIAL", "DUE"],
