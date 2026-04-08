@@ -21,6 +21,308 @@ const endOfDay = (value) => {
   return date;
 };
 
+const addDays = (value, days) => {
+  const date = startOfDay(value);
+  date.setDate(date.getDate() + days);
+  return date;
+};
+
+const toDayKey = (value) => startOfDay(value).toISOString().slice(0, 10);
+
+const getInvoicePaymentTypeQuery = (paymentTypeFilter) =>
+  paymentTypeFilter === "all" ? { $in: ["cash", "bank"] } : paymentTypeFilter;
+
+const getPaymentModeQuery = (paymentTypeFilter) =>
+  paymentTypeFilter === "all"
+    ? { $in: ["CASH", "UPI", "BANK", "CHEQUE"] }
+    : paymentTypeFilter === "cash"
+    ? "CASH"
+    : { $in: ["UPI", "BANK", "CHEQUE"] };
+
+const getDayBookPaymentType = (paymentMode) =>
+  String(paymentMode || "").toUpperCase() === "CASH" ? "cash" : "bank";
+
+const sumAmount = (rows = [], field = "amount") =>
+  rows.reduce((sum, row) => sum + Number(row?.[field] || 0), 0);
+
+const loadPaymentInvoiceMeta = async (companyId, payments = []) => {
+  const saleIds = [...new Set(
+    payments
+      .filter((payment) => payment.invoiceType === "SALE" && payment.invoiceId)
+      .map((payment) => String(payment.invoiceId)),
+  )];
+  const purchaseIds = [...new Set(
+    payments
+      .filter((payment) => payment.invoiceType === "PURCHASE" && payment.invoiceId)
+      .map((payment) => String(payment.invoiceId)),
+  )];
+
+  const [sales, purchases] = await Promise.all([
+    saleIds.length
+      ? SalesInvoice.find({ companyId, _id: { $in: saleIds } }).select("_id invoiceDate invoiceNo")
+      : [],
+    purchaseIds.length
+      ? PurchaseInvoice.find({ companyId, _id: { $in: purchaseIds } }).select("_id invoiceDate invoiceNo")
+      : [],
+  ]);
+
+  const saleMap = new Map(sales.map((invoice) => [String(invoice._id), invoice]));
+  const purchaseMap = new Map(purchases.map((invoice) => [String(invoice._id), invoice]));
+
+  return payments.map((payment) => {
+    const linkedInvoice =
+      payment.invoiceType === "SALE"
+        ? saleMap.get(String(payment.invoiceId))
+        : payment.invoiceType === "PURCHASE"
+        ? purchaseMap.get(String(payment.invoiceId))
+        : null;
+
+    return {
+      ...payment,
+      linkedInvoiceDate: linkedInvoice?.invoiceDate || null,
+      linkedInvoiceNo: linkedInvoice?.invoiceNo || "",
+    };
+  });
+};
+
+const isOpeningAdjustmentPayment = (payment) =>
+  String(payment.adjustType || "").toLowerCase() === "opening" ||
+  String(payment.invoiceType || "").toUpperCase() === "OPENING";
+
+const getInvoiceSettlementModes = (invoice, payments = []) => {
+  const invoiceDay = startOfDay(invoice.invoiceDate).getTime();
+  return payments
+    .filter(
+      (payment) =>
+        String(payment.adjustType || "").toLowerCase() !== "opening" &&
+        String(payment.invoiceId || "") === String(invoice._id) &&
+        startOfDay(payment.paymentDate).getTime() === invoiceDay,
+    )
+    .map((payment) => String(payment.paymentMode || "").toUpperCase());
+};
+
+const getInvoiceDayBookPaymentType = (invoice, settlementModes = []) => {
+  const invoicePaymentType = String(invoice.paymentType || "credit").toLowerCase();
+  if (invoicePaymentType === "cash" || invoicePaymentType === "bank") {
+    return invoicePaymentType;
+  }
+  if (!settlementModes.length) {
+    return null;
+  }
+  const hasCash = settlementModes.includes("CASH");
+  const hasNonCash = settlementModes.some((mode) => mode !== "CASH");
+  if (hasCash && !hasNonCash) return "cash";
+  if (!hasCash && hasNonCash) return "bank";
+  return "bank";
+};
+
+const shouldIncludeInvoiceInDayBook = (invoice, paymentTypeFilter, settlementModes = []) => {
+  const invoiceDayBookPaymentType = getInvoiceDayBookPaymentType(invoice, settlementModes);
+  if (!invoiceDayBookPaymentType) {
+    return false;
+  }
+  if (paymentTypeFilter !== "all" && invoiceDayBookPaymentType !== paymentTypeFilter) {
+    return false;
+  }
+  if (String(invoice.paymentType || "").toLowerCase() === "credit") {
+    return settlementModes.length > 0;
+  }
+  return true;
+};
+
+const isPreviousDueSettlementPayment = (payment) => {
+  if (isOpeningAdjustmentPayment(payment)) {
+    return true;
+  }
+  if (!payment.linkedInvoiceDate) {
+    return true;
+  }
+  return startOfDay(payment.linkedInvoiceDate).getTime() < startOfDay(payment.paymentDate).getTime();
+};
+
+const fetchDayBookTransactions = async ({
+  companyId,
+  fromDate,
+  toDate,
+  paymentTypeFilter,
+  includeRows = true,
+}) => {
+  const invoiceQuery = {
+    companyId,
+    invoiceDate: { $gte: fromDate, $lte: toDate },
+  };
+  const paymentQuery = {
+    companyId,
+    paymentDate: { $gte: fromDate, $lte: toDate },
+    paymentMode: getPaymentModeQuery(paymentTypeFilter),
+  };
+  const expenseQuery = {
+    companyId,
+    date: { $gte: fromDate, $lte: toDate },
+    ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
+  };
+
+  const [rawSales, rawPurchases, rawPayments, expenses] = await Promise.all([
+    SalesInvoice.find(invoiceQuery)
+      .populate("partyId", "name")
+      .populate("bankAccountId", "accountName")
+      .sort({ invoiceDate: 1, createdAt: 1 }),
+    PurchaseInvoice.find(invoiceQuery)
+      .populate("partyId", "name")
+      .populate("bankAccountId", "accountName")
+      .sort({ invoiceDate: 1, createdAt: 1 }),
+    Payment.find(paymentQuery)
+      .populate("partyId", "name")
+      .populate("bankAccountId", "accountName")
+      .sort({ paymentDate: 1, createdAt: 1 })
+      .lean(),
+    Expense.find(expenseQuery)
+      .populate("bankAccountId", "accountName")
+      .sort({ date: 1, createdAt: 1 }),
+  ]);
+
+  const payments = (await loadPaymentInvoiceMeta(companyId, rawPayments))
+    .filter((payment) => isPreviousDueSettlementPayment(payment));
+
+  const sales = rawSales.filter((invoice) =>
+    shouldIncludeInvoiceInDayBook(invoice, paymentTypeFilter, getInvoiceSettlementModes(invoice, rawPayments)),
+  );
+  const purchases = rawPurchases.filter((invoice) =>
+    shouldIncludeInvoiceInDayBook(invoice, paymentTypeFilter, getInvoiceSettlementModes(invoice, rawPayments)),
+  );
+
+  const salesRows = sales.map((invoice) => ({
+    date: invoice.invoiceDate,
+    type: "sale",
+    partyName: invoice.partyId?.name || "Cash",
+    paymentType: getInvoiceDayBookPaymentType(invoice, getInvoiceSettlementModes(invoice, rawPayments)),
+    amount: Number(invoice.totalAmount || 0),
+    billId: invoice._id,
+    bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
+    bankAccountName: invoice.bankAccountId?.accountName || "-",
+    invoiceNo: invoice.invoiceNo || "-",
+  }));
+
+  const purchaseRows = purchases.map((invoice) => ({
+    date: invoice.invoiceDate,
+    type: "purchase",
+    partyName: invoice.partyId?.name || "Cash",
+    paymentType: getInvoiceDayBookPaymentType(invoice, getInvoiceSettlementModes(invoice, rawPayments)),
+    amount: Number(invoice.totalAmount || 0),
+    billId: invoice._id,
+    bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
+    bankAccountName: invoice.bankAccountId?.accountName || "-",
+    invoiceNo: invoice.invoiceNo || "-",
+  }));
+
+  const paymentRows = payments.map((payment) => ({
+    date: payment.paymentDate,
+    type: "payment",
+    partyName: payment.partyId?.name || "Cash",
+    paymentType: getDayBookPaymentType(payment.paymentMode),
+    amount: Number(payment.amount || 0),
+    billId: payment.invoiceId || payment._id,
+    paymentId: payment._id,
+    paymentDirection: String(payment.paymentType || "RECEIVED").toLowerCase(),
+    invoiceType: payment.invoiceType || "",
+    referenceNo: payment.referenceNo || "",
+    bankAccountId: payment.bankAccountId?._id || payment.bankAccountId || null,
+    note: payment.remarks || "",
+    bankAccountName: payment.bankAccountId?.accountName || "-",
+    invoiceNo: payment.linkedInvoiceNo || "-",
+    adjustType: payment.adjustType || "bill",
+  }));
+
+  const expenseRows = expenses.map((expense) => ({
+    date: expense.date,
+    type: "expense",
+    partyName: String(expense.title || "").trim() || "Expense",
+    paymentType: String(expense.paymentType || "cash").toLowerCase(),
+    amount: Number(expense.amount || 0),
+    billId: expense._id,
+    bankAccountId: expense.bankAccountId?._id || expense.bankAccountId || null,
+    note: expense.note || "",
+    bankAccountName: expense.bankAccountId?.accountName || "-",
+  }));
+
+  const rows = [...salesRows, ...purchaseRows, ...paymentRows, ...expenseRows].sort(
+    (a, b) => new Date(a.date) - new Date(b.date),
+  );
+
+  const summary = {
+    totalSales: sumAmount(salesRows),
+    totalPurchase: sumAmount(purchaseRows),
+    totalPaymentReceived: sumAmount(
+      paymentRows.filter((row) => row.paymentDirection === "received"),
+    ),
+    totalPaymentPaid: sumAmount(
+      paymentRows.filter((row) => row.paymentDirection === "paid"),
+    ),
+    totalExpenses: sumAmount(expenseRows),
+  };
+  summary.netMovement =
+    summary.totalSales -
+    summary.totalPurchase +
+    summary.totalPaymentReceived -
+    summary.totalPaymentPaid -
+    summary.totalExpenses;
+
+  return {
+    rows: includeRows ? rows : [],
+    summary,
+  };
+};
+
+const computeOpeningBalance = async ({ companyId, selectedDate, paymentTypeFilter }) => {
+  const dayStart = startOfDay(selectedDate);
+  const manualOpening = await CompanyBalance.findOne({
+    companyId,
+    date: dayStart,
+  });
+
+  if (manualOpening) {
+    return {
+      openingBalance: Number(manualOpening.openingBalance || 0),
+      isManualOpeningBalance: true,
+    };
+  }
+
+  const latestManualBefore = await CompanyBalance.findOne({
+    companyId,
+    date: { $lt: dayStart },
+  }).sort({ date: -1 });
+
+  const baseDate = latestManualBefore ? startOfDay(latestManualBefore.date) : null;
+  const baseBalance = Number(latestManualBefore?.openingBalance || 0);
+
+  if (!baseDate) {
+    const movement = await fetchDayBookTransactions({
+      companyId,
+      fromDate: new Date(0),
+      toDate: new Date(dayStart.getTime() - 1),
+      paymentTypeFilter,
+      includeRows: false,
+    });
+    return {
+      openingBalance: movement.summary.netMovement,
+      isManualOpeningBalance: false,
+    };
+  }
+
+  const movement = await fetchDayBookTransactions({
+    companyId,
+    fromDate: baseDate,
+    toDate: new Date(dayStart.getTime() - 1),
+    paymentTypeFilter,
+    includeRows: false,
+  });
+
+  return {
+    openingBalance: baseBalance + movement.summary.netMovement,
+    isManualOpeningBalance: false,
+  };
+};
+
 /* ================= STOCK REPORT ================= */
 exports.stockReport = async (req, res) => {
   try {
@@ -209,154 +511,29 @@ exports.dailyReport = async (req, res) => {
     const dayStart = startOfDay(selectedDate);
     const dayEnd = endOfDay(selectedDate);
 
-    const dailyInvoiceQuery = {
-      companyId,
-      paymentType: paymentTypeFilter === "all" ? { $in: ["cash", "bank"] } : paymentTypeFilter,
-      invoiceDate: { $gte: dayStart, $lte: dayEnd },
-    };
-
-    const previousInvoiceQuery = {
-      companyId,
-      paymentType: paymentTypeFilter === "all" ? { $in: ["cash", "bank"] } : paymentTypeFilter,
-      invoiceDate: { $lt: dayStart },
-    };
-
-    const paymentModeQuery =
-      paymentTypeFilter === "all"
-        ? { $in: ["CASH", "UPI", "BANK", "CHEQUE"] }
-        : paymentTypeFilter === "cash"
-        ? "CASH"
-        : { $in: ["UPI", "BANK", "CHEQUE"] };
-
-    const [sales, purchases, payments, previousSales, previousPurchases, previousPayments] = await Promise.all([
-      SalesInvoice.find(
-        billTypeFilter === "purchase" ? { _id: null } : dailyInvoiceQuery,
-      )
-        .populate("partyId", "name")
-        .populate("bankAccountId", "accountName")
-        .sort({ invoiceDate: 1, createdAt: 1 }),
-      PurchaseInvoice.find(
-        billTypeFilter === "sale" ? { _id: null } : dailyInvoiceQuery,
-      )
-        .populate("partyId", "name")
-        .populate("bankAccountId", "accountName")
-        .sort({ invoiceDate: 1, createdAt: 1 }),
-      Payment.find(
-        billTypeFilter !== "all" && billTypeFilter !== "payment"
-          ? { _id: null }
-          : {
-              companyId,
-              paymentDate: { $gte: dayStart, $lte: dayEnd },
-              paymentMode: paymentModeQuery,
-            },
-      )
-        .populate("partyId", "name")
-        .populate("bankAccountId", "accountName")
-        .sort({ paymentDate: 1, createdAt: 1 }),
-      SalesInvoice.find(previousInvoiceQuery).select("totalAmount"),
-      PurchaseInvoice.find(previousInvoiceQuery).select("totalAmount"),
-      Payment.find({
-        companyId,
-        paymentDate: { $lt: dayStart },
-        paymentMode: paymentModeQuery,
-      }).select("amount paymentType"),
-    ]);
-
-    const expenses = await Expense.find({
-      companyId,
-      date: { $gte: dayStart, $lte: dayEnd },
-      ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
-    })
-      .populate("bankAccountId", "accountName")
-      .sort({ date: 1, createdAt: 1 });
-
-    const manualOpening = await CompanyBalance.findOne({
-      companyId,
-      date: dayStart,
-    });
-
     const matchesSearch = (partyName) => {
       if (!search) return true;
       return String(partyName || "cash").toLowerCase().includes(search);
     };
 
-    const rows = [
-      ...sales.map((invoice) => ({
-        date: invoice.invoiceDate,
-        type: "sale",
-        partyName: invoice.partyId?.name || "Cash",
-        paymentType: String(invoice.paymentType || "cash").toLowerCase(),
-        amount: Number(invoice.totalAmount || 0),
-        billId: invoice._id,
-        bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
-        bankAccountName: invoice.bankAccountId?.accountName || "-",
-      })),
-      ...purchases.map((invoice) => ({
-        date: invoice.invoiceDate,
-        type: "purchase",
-        partyName: invoice.partyId?.name || "Cash",
-        paymentType: String(invoice.paymentType || "cash").toLowerCase(),
-        amount: Number(invoice.totalAmount || 0),
-        billId: invoice._id,
-        bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
-        bankAccountName: invoice.bankAccountId?.accountName || "-",
-      })),
-      ...payments.map((payment) => ({
-        date: payment.paymentDate,
-        type: "payment",
-        partyName: payment.partyId?.name || "Cash",
-        paymentType: String(payment.paymentMode || "").toUpperCase() === "CASH" ? "cash" : "bank",
-        amount: Number(payment.amount || 0),
-        billId: payment.invoiceId || payment._id,
-        paymentId: payment._id,
-        paymentDirection: String(payment.paymentType || "RECEIVED").toLowerCase(),
-        invoiceType: payment.invoiceType || "",
-        referenceNo: payment.referenceNo || "",
-        bankAccountId: payment.bankAccountId?._id || payment.bankAccountId || null,
-        note: payment.remarks || "",
-        bankAccountName: payment.bankAccountId?.accountName || "-",
-      })),
-      ...expenses.map((expense) => ({
-        date: expense.date,
-        type: "expense",
-        partyName: String(expense.title || "").trim() || "Expense",
-        paymentType: String(expense.paymentType || "cash").toLowerCase(),
-        amount: Number(expense.amount || 0),
-        billId: expense._id,
-        bankAccountId: expense.bankAccountId?._id || expense.bankAccountId || null,
-        note: expense.note || "",
-        bankAccountName: expense.bankAccountId?.accountName || "-",
-      })),
-    ]
+    const [openingInfo, todayBook] = await Promise.all([
+      computeOpeningBalance({
+        companyId,
+        selectedDate,
+        paymentTypeFilter,
+      }),
+      fetchDayBookTransactions({
+        companyId,
+        fromDate: dayStart,
+        toDate: dayEnd,
+        paymentTypeFilter,
+      }),
+    ]);
+
+    const rows = todayBook.rows
       .filter((row) => matchesSearch(row.partyName))
       .filter((row) => billTypeFilter === "all" || row.type === billTypeFilter)
       .sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    const previousSalesTotal = previousSales.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
-    const previousPurchaseTotal = previousPurchases.reduce((sum, row) => sum + Number(row.totalAmount || 0), 0);
-    const previousPaymentReceived = previousPayments
-      .filter((row) => String(row.paymentType || "").toUpperCase() === "RECEIVED")
-      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
-    const previousPaymentPaid = previousPayments
-      .filter((row) => String(row.paymentType || "").toUpperCase() === "PAID")
-      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
-    const previousExpenseTotal = await Expense.aggregate([
-      {
-        $match: {
-          companyId,
-          date: { $lt: dayStart },
-          ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
-        },
-      },
-      { $group: { _id: null, total: { $sum: "$amount" } } },
-    ]);
-    const openingBalance =
-      manualOpening?.openingBalance ??
-      (previousSalesTotal -
-        previousPurchaseTotal +
-        previousPaymentReceived -
-        previousPaymentPaid -
-        Number(previousExpenseTotal[0]?.total || 0));
 
     const totalSales = rows
       .filter((row) => row.type === "sale")
@@ -373,6 +550,7 @@ exports.dailyReport = async (req, res) => {
     const totalExpenses = rows
       .filter((row) => row.type === "expense")
       .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const openingBalance = Number(openingInfo.openingBalance || 0);
     const closingBalance =
       openingBalance +
       totalSales -
@@ -391,12 +569,110 @@ exports.dailyReport = async (req, res) => {
         totalPaymentPaid,
         totalExpenses,
         closingBalance,
-        isManualOpeningBalance: Boolean(manualOpening),
+        isManualOpeningBalance: openingInfo.isManualOpeningBalance,
       },
     });
   } catch (err) {
     console.error("Daily Report Error:", err);
     res.status(500).json({ error: "Failed to load daily report" });
+  }
+};
+
+exports.dayBookBalanceHistory = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const fromRaw = req.query.from || req.query.date;
+    const toRaw = req.query.to || req.query.date || fromRaw;
+    const paymentTypeFilter = String(req.query.paymentType || "all").toLowerCase();
+
+    if (!fromRaw || !toRaw) {
+      return res.status(400).json({ error: "from and to are required" });
+    }
+
+    const fromDate = startOfDay(fromRaw);
+    const toDate = startOfDay(toRaw);
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime()) || fromDate > toDate) {
+      return res.status(400).json({ error: "Invalid date range" });
+    }
+
+    const dayCount = Math.floor((toDate.getTime() - fromDate.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    if (dayCount > 366) {
+      return res.status(400).json({ error: "Date range should not exceed 366 days" });
+    }
+
+    const [openingInfo, book, manualOpenings] = await Promise.all([
+      computeOpeningBalance({ companyId, selectedDate: fromDate, paymentTypeFilter }),
+      fetchDayBookTransactions({
+        companyId,
+        fromDate,
+        toDate: endOfDay(toDate),
+        paymentTypeFilter,
+      }),
+      CompanyBalance.find({
+        companyId,
+        date: { $gte: fromDate, $lte: toDate },
+      }).select("date openingBalance"),
+    ]);
+
+    const manualMap = new Map(
+      manualOpenings.map((entry) => [toDayKey(entry.date), Number(entry.openingBalance || 0)]),
+    );
+
+    const movementMap = new Map();
+    book.rows.forEach((row) => {
+      const key = toDayKey(row.date);
+      const current = movementMap.get(key) || {
+        sales: 0,
+        purchase: 0,
+        paymentReceived: 0,
+        paymentPaid: 0,
+        expenses: 0,
+      };
+
+      if (row.type === "sale") current.sales += Number(row.amount || 0);
+      if (row.type === "purchase") current.purchase += Number(row.amount || 0);
+      if (row.type === "expense") current.expenses += Number(row.amount || 0);
+      if (row.type === "payment" && row.paymentDirection === "received") current.paymentReceived += Number(row.amount || 0);
+      if (row.type === "payment" && row.paymentDirection === "paid") current.paymentPaid += Number(row.amount || 0);
+      movementMap.set(key, current);
+    });
+
+    const history = [];
+    let runningOpening = Number(openingInfo.openingBalance || 0);
+
+    for (let cursor = startOfDay(fromDate); cursor <= toDate; cursor = addDays(cursor, 1)) {
+      const key = toDayKey(cursor);
+      if (manualMap.has(key)) {
+        runningOpening = manualMap.get(key);
+      }
+      const movement = movementMap.get(key) || {
+        sales: 0,
+        purchase: 0,
+        paymentReceived: 0,
+        paymentPaid: 0,
+        expenses: 0,
+      };
+      const closingBalance =
+        runningOpening +
+        movement.sales -
+        movement.purchase +
+        movement.paymentReceived -
+        movement.paymentPaid -
+        movement.expenses;
+
+      history.push({
+        date: key,
+        openingBalance: runningOpening,
+        closingBalance,
+      });
+
+      runningOpening = closingBalance;
+    }
+
+    res.json({ history });
+  } catch (err) {
+    console.error("Day Book Balance History Error:", err);
+    res.status(500).json({ error: "Failed to load balance history" });
   }
 };
 

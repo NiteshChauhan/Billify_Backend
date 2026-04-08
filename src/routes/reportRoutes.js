@@ -14,6 +14,7 @@ router.get("/stock", report.stockReport);
 router.get("/purchase", report.purchaseReport);
 router.get("/sales", report.salesReport);
 router.get("/daily", report.dailyReport);
+router.get("/daybook/balance-history", report.dayBookBalanceHistory);
 
 /* PROFIT & LOSS */
 router.get("/profit-loss", report.profitLossReport);
