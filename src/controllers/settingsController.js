@@ -2,7 +2,7 @@ const Company = require("../models/Company");
 
 exports.getCompanySettings = async (req, res) => {
   try {
-    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber");
+    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber currencySymbol");
     if (!company) {
       return res.status(404).json({ message: "Company not found" });
     }
@@ -14,7 +14,7 @@ exports.getCompanySettings = async (req, res) => {
 
 exports.saveCompanySettings = async (req, res) => {
   try {
-    const { name, mobile, email, address, gstNumber } = req.body;
+    const { name, mobile, email, address, gstNumber, currencySymbol } = req.body;
 
     if (!String(name || "").trim()) {
       return res.status(400).json({ message: "name is required" });
@@ -28,9 +28,10 @@ exports.saveCompanySettings = async (req, res) => {
         email: String(email || "").trim(),
         address: String(address || "").trim(),
         gstNumber: String(gstNumber || "").trim(),
+        currencySymbol: String(currencySymbol || "Rs").trim() || "Rs",
       },
       { new: true },
-    ).select("name mobile email address gstNumber");
+    ).select("name mobile email address gstNumber currencySymbol");
 
     if (!company) {
       return res.status(404).json({ message: "Company not found" });

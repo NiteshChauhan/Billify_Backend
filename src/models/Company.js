@@ -6,6 +6,7 @@ const companySchema = new mongoose.Schema({
   email: String,
   gstNumber: String,
   address: String,
+  currencySymbol: { type: String, default: "Rs" },
   subscriptionExpiry: Date,
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
