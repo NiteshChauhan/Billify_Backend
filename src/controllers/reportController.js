@@ -6,6 +6,7 @@ const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
 const CompanyBalance = require("../models/CompanyBalance");
 const Expense = require("../models/Expense");
+const LoanEntry = require("../models/LoanEntry");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { getProfitSummary } = require("../utils/profitUtils");
 
@@ -161,8 +162,13 @@ const fetchDayBookTransactions = async ({
     date: { $gte: fromDate, $lte: toDate },
     ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
   };
+  const loanQuery = {
+    companyId,
+    date: { $gte: fromDate, $lte: toDate },
+    ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
+  };
 
-  const [rawSales, rawPurchases, rawPayments, expenses] = await Promise.all([
+  const [rawSales, rawPurchases, rawPayments, expenses, loans] = await Promise.all([
     SalesInvoice.find(invoiceQuery)
       .populate("partyId", "name")
       .populate("bankAccountId", "accountName")
@@ -177,6 +183,9 @@ const fetchDayBookTransactions = async ({
       .sort({ paymentDate: 1, createdAt: 1 })
       .lean(),
     Expense.find(expenseQuery)
+      .populate("bankAccountId", "accountName")
+      .sort({ date: 1, createdAt: 1 }),
+    LoanEntry.find(loanQuery)
       .populate("bankAccountId", "accountName")
       .sort({ date: 1, createdAt: 1 }),
   ]);
@@ -245,7 +254,21 @@ const fetchDayBookTransactions = async ({
     bankAccountName: expense.bankAccountId?.accountName || "-",
   }));
 
-  const rows = [...salesRows, ...purchaseRows, ...paymentRows, ...expenseRows].sort(
+  const loanRows = loans.map((loan) => ({
+    date: loan.date,
+    type: "loan",
+    partyName: loan.type === "loan_in" ? "Owner Contribution" : "Loan Repayment",
+    paymentType: String(loan.paymentType || "cash").toLowerCase(),
+    amount: Number(loan.amount || 0),
+    remainingAmount: Number(loan.remainingAmount || 0),
+    billId: loan._id,
+    loanType: loan.type,
+    bankAccountId: loan.bankAccountId?._id || loan.bankAccountId || null,
+    note: loan.note || "",
+    bankAccountName: loan.bankAccountId?.accountName || "-",
+  }));
+
+  const rows = [...salesRows, ...purchaseRows, ...paymentRows, ...expenseRows, ...loanRows].sort(
     (a, b) => new Date(a.date) - new Date(b.date),
   );
 
@@ -259,13 +282,17 @@ const fetchDayBookTransactions = async ({
       paymentRows.filter((row) => row.paymentDirection === "paid"),
     ),
     totalExpenses: sumAmount(expenseRows),
+    totalLoanIn: sumAmount(loanRows.filter((row) => row.loanType === "loan_in")),
+    totalLoanOut: sumAmount(loanRows.filter((row) => row.loanType === "loan_out")),
   };
   summary.netMovement =
     summary.totalSales -
     summary.totalPurchase +
     summary.totalPaymentReceived -
     summary.totalPaymentPaid -
-    summary.totalExpenses;
+    summary.totalExpenses +
+    summary.totalLoanIn -
+    summary.totalLoanOut;
 
   return {
     rows: includeRows ? rows : [],
@@ -498,7 +525,7 @@ exports.dailyReport = async (req, res) => {
     const billTypeFilter = String(req.query.type || "all").toLowerCase();
     const search = String(req.query.search || "").trim().toLowerCase();
     const validPaymentTypes = ["all", "cash", "bank"];
-    const validBillTypes = ["all", "sale", "purchase", "payment"];
+    const validBillTypes = ["all", "sale", "purchase", "payment", "loan"];
 
     if (!validPaymentTypes.includes(paymentTypeFilter)) {
       return res.status(400).json({ error: "Invalid paymentType" });
@@ -550,6 +577,12 @@ exports.dailyReport = async (req, res) => {
     const totalExpenses = rows
       .filter((row) => row.type === "expense")
       .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalLoanIn = rows
+      .filter((row) => row.type === "loan" && row.loanType === "loan_in")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalLoanOut = rows
+      .filter((row) => row.type === "loan" && row.loanType === "loan_out")
+      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
     const openingBalance = Number(openingInfo.openingBalance || 0);
     const closingBalance =
       openingBalance +
@@ -557,7 +590,9 @@ exports.dailyReport = async (req, res) => {
       totalPurchase +
       totalPaymentReceived -
       totalPaymentPaid -
-      totalExpenses;
+      totalExpenses +
+      totalLoanIn -
+      totalLoanOut;
 
     res.json({
       rows,
@@ -568,6 +603,8 @@ exports.dailyReport = async (req, res) => {
         totalPaymentReceived,
         totalPaymentPaid,
         totalExpenses,
+        totalLoanIn,
+        totalLoanOut,
         closingBalance,
         isManualOpeningBalance: openingInfo.isManualOpeningBalance,
       },
@@ -627,6 +664,8 @@ exports.dayBookBalanceHistory = async (req, res) => {
         paymentReceived: 0,
         paymentPaid: 0,
         expenses: 0,
+        loanIn: 0,
+        loanOut: 0,
       };
 
       if (row.type === "sale") current.sales += Number(row.amount || 0);
@@ -634,6 +673,8 @@ exports.dayBookBalanceHistory = async (req, res) => {
       if (row.type === "expense") current.expenses += Number(row.amount || 0);
       if (row.type === "payment" && row.paymentDirection === "received") current.paymentReceived += Number(row.amount || 0);
       if (row.type === "payment" && row.paymentDirection === "paid") current.paymentPaid += Number(row.amount || 0);
+      if (row.type === "loan" && row.loanType === "loan_in") current.loanIn += Number(row.amount || 0);
+      if (row.type === "loan" && row.loanType === "loan_out") current.loanOut += Number(row.amount || 0);
       movementMap.set(key, current);
     });
 
@@ -651,6 +692,8 @@ exports.dayBookBalanceHistory = async (req, res) => {
         paymentReceived: 0,
         paymentPaid: 0,
         expenses: 0,
+        loanIn: 0,
+        loanOut: 0,
       };
       const closingBalance =
         runningOpening +
@@ -658,7 +701,9 @@ exports.dayBookBalanceHistory = async (req, res) => {
         movement.purchase +
         movement.paymentReceived -
         movement.paymentPaid -
-        movement.expenses;
+        movement.expenses +
+        movement.loanIn -
+        movement.loanOut;
 
       history.push({
         date: key,

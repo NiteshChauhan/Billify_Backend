@@ -1,10 +1,33 @@
 const Company = require("../models/Company");
 
+const CURRENCY_DECIMALS = {
+  Rs: 2,
+  $: 2,
+  AED: 2,
+  EUR: 2,
+  KWD: 3,
+  JOD: 3,
+  OMR: 3,
+};
+
+const resolveCurrencyDecimals = (currencySymbol, requestedDecimals) => {
+  if (requestedDecimals !== undefined && requestedDecimals !== null && requestedDecimals !== "") {
+    const parsed = Number(requestedDecimals);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 6) {
+      return parsed;
+    }
+  }
+  return CURRENCY_DECIMALS[String(currencySymbol || "Rs").trim()] ?? 2;
+};
+
 exports.getCompanySettings = async (req, res) => {
   try {
-    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber currencySymbol");
+    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber currencySymbol currencyDecimals");
     if (!company) {
       return res.status(404).json({ message: "Company not found" });
+    }
+    if (company.currencyDecimals === undefined || company.currencyDecimals === null) {
+      company.currencyDecimals = resolveCurrencyDecimals(company.currencySymbol);
     }
     res.json(company);
   } catch (err) {
@@ -14,11 +37,14 @@ exports.getCompanySettings = async (req, res) => {
 
 exports.saveCompanySettings = async (req, res) => {
   try {
-    const { name, mobile, email, address, gstNumber, currencySymbol } = req.body;
+    const { name, mobile, email, address, gstNumber, currencySymbol, currencyDecimals } = req.body;
 
     if (!String(name || "").trim()) {
       return res.status(400).json({ message: "name is required" });
     }
+
+    const normalizedCurrencySymbol = String(currencySymbol || "Rs").trim() || "Rs";
+    const normalizedCurrencyDecimals = resolveCurrencyDecimals(normalizedCurrencySymbol, currencyDecimals);
 
     const company = await Company.findByIdAndUpdate(
       req.user.companyId,
@@ -28,10 +54,11 @@ exports.saveCompanySettings = async (req, res) => {
         email: String(email || "").trim(),
         address: String(address || "").trim(),
         gstNumber: String(gstNumber || "").trim(),
-        currencySymbol: String(currencySymbol || "Rs").trim() || "Rs",
+        currencySymbol: normalizedCurrencySymbol,
+        currencyDecimals: normalizedCurrencyDecimals,
       },
       { new: true },
-    ).select("name mobile email address gstNumber currencySymbol");
+    ).select("name mobile email address gstNumber currencySymbol currencyDecimals");
 
     if (!company) {
       return res.status(404).json({ message: "Company not found" });

@@ -87,6 +87,7 @@ app.use("/api/profit", require("../src/routes/profitRoutes"));
 app.use("/api/dashboard", require("../src/routes/dashboardRoutes"));
 app.use("/api/company-balance", require("../src/routes/companyBalanceRoutes"));
 app.use("/api/expenses", require("../src/routes/expenseRoutes"));
+app.use("/api/loans", require("../src/routes/loanRoutes"));
 app.use("/api/bank-accounts", require("../src/routes/bankAccountRoutes"));
 app.use("/api/settings", require("../src/routes/settingsRoutes"));
 

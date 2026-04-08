@@ -95,6 +95,9 @@ app.use("/api/company-balance", companyBalanceRoutes);
 const expenseRoutes = require("./routes/expenseRoutes");
 app.use("/api/expenses", expenseRoutes);
 
+const loanRoutes = require("./routes/loanRoutes");
+app.use("/api/loans", loanRoutes);
+
 const bankAccountRoutes = require("./routes/bankAccountRoutes");
 app.use("/api/bank-accounts", bankAccountRoutes);
 
