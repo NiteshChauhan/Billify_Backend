@@ -3,7 +3,13 @@ const SalesInvoice = require("../models/SalesInvoice");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const StockLedger = require("../models/StockLedger");
 const Party = require("../models/Party");
-const { getAvailableStock } = require("../utils/stockUtils");
+const {
+  getAvailableStock,
+  restoreBatchesFromBreakdown,
+  restoreByAverageCost,
+  consumePurchaseBatches,
+  consumeBatches,
+} = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const normalizeReturnType = (value = "") => {
@@ -70,6 +76,17 @@ exports.createSaleReturn = async (req, res) => {
       if (!item.rate) {
         item.rate = Number(soldItem.rate || 0);
         item.amount = Number((item.quantity * item.rate).toFixed(2));
+      }
+    }
+
+    for (const item of items) {
+      const soldItem = invoice.items.find(
+        (invItem) => String(invItem.productId) === String(item.productId),
+      );
+      if (soldItem && Array.isArray(soldItem.costBreakdown) && soldItem.costBreakdown.length) {
+        await restoreBatchesFromBreakdown(companyId, soldItem.costBreakdown, item.quantity);
+      } else {
+        await restoreByAverageCost(companyId, item.productId, item.quantity, returnDate || new Date());
       }
     }
 
@@ -186,6 +203,18 @@ exports.createPurchaseReturn = async (req, res) => {
     }
 
     for (const item of items) {
+      try {
+        await consumePurchaseBatches(companyId, item.productId, invoice._id, item.quantity);
+      } catch (err) {
+        await consumeBatches({
+          companyId,
+          productId: item.productId,
+          quantity: item.quantity,
+          asOfDate: returnDate || new Date(),
+          sourceHint: "PURCHASE_RETURN_FALLBACK",
+        });
+      }
+
       await StockLedger.create({
         companyId,
         productId: item.productId,

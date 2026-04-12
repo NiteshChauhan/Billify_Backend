@@ -31,15 +31,65 @@ const computeEntryCost = async (companyId, saleEntry) => {
   return totalQty > 0 ? totalValue / totalQty : 0;
 };
 
-const buildSaleInvoiceMetrics = async (companyId, invoiceIds) => {
-  if (!invoiceIds.length) {
+const buildSaleInvoiceMetrics = async (companyId, invoices = []) => {
+  if (!invoices.length) {
     return new Map();
+  }
+
+  const invoiceMetrics = new Map();
+  const legacyInvoiceIds = [];
+
+  for (const invoice of invoices) {
+    const items = Array.isArray(invoice.items) ? invoice.items : [];
+    const hasCost =
+      items.some(
+        (item) =>
+          Number(item.actualCost || 0) > 0 ||
+          (Array.isArray(item.costBreakdown) && item.costBreakdown.length),
+      );
+
+    if (!hasCost) {
+      legacyInvoiceIds.push(invoice._id);
+      continue;
+    }
+
+    const current = {
+      saleAmount: 0,
+      costAmount: 0,
+      productNames: new Set(),
+      quantity: 0,
+    };
+
+    for (const item of items) {
+      const quantity = Number(item.quantity || 0);
+      const saleRate = Number(item.rate || 0);
+      const amount = Number(item.amount || quantity * saleRate);
+      const costFromBreakdown = Array.isArray(item.costBreakdown)
+        ? item.costBreakdown.reduce((sum, row) => sum + Number(row.cost || 0), 0)
+        : 0;
+      const actualCost = Number(item.actualCost || costFromBreakdown || 0);
+
+      current.saleAmount += amount;
+      current.costAmount += actualCost;
+      current.quantity += quantity;
+
+      const productName = item.productId?.name;
+      if (productName) {
+        current.productNames.add(productName);
+      }
+    }
+
+    invoiceMetrics.set(String(invoice._id), current);
+  }
+
+  if (!legacyInvoiceIds.length) {
+    return invoiceMetrics;
   }
 
   const saleEntries = await StockLedger.find({
     companyId,
     type: "SALE",
-    referenceId: { $in: invoiceIds },
+    referenceId: { $in: legacyInvoiceIds },
   }).sort({ createdAt: 1 });
 
   const productIds = [...new Set(saleEntries.map((entry) => String(entry.productId)).filter(Boolean))];
@@ -48,7 +98,6 @@ const buildSaleInvoiceMetrics = async (companyId, invoiceIds) => {
     : [];
   const productMap = new Map(products.map((product) => [String(product._id), product.name]));
 
-  const invoiceMetrics = new Map();
   for (const entry of saleEntries) {
     const avgCost = await computeEntryCost(companyId, entry);
     const invoiceId = String(entry.referenceId);
@@ -83,10 +132,11 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, options = {}) => 
     status: "PAID",
   })
     .populate("partyId", "name")
-    .select("_id invoiceNo invoiceDate totalAmount paidAmount paymentType partyId");
+    .populate("items.productId", "name")
+    .select("_id invoiceNo invoiceDate totalAmount paidAmount paymentType partyId items");
 
   const invoiceIds = paidSales.map((invoice) => invoice._id);
-  const saleMetricsMap = await buildSaleInvoiceMetrics(companyId, invoiceIds);
+  const saleMetricsMap = await buildSaleInvoiceMetrics(companyId, paidSales);
 
   const payments = invoiceIds.length
     ? await Payment.find({

@@ -7,8 +7,10 @@ const Payment = require("../models/Payment");
 const CompanyBalance = require("../models/CompanyBalance");
 const Expense = require("../models/Expense");
 const LoanEntry = require("../models/LoanEntry");
+const StockBatch = require("../models/StockBatch");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { getProfitSummary } = require("../utils/profitUtils");
+const { previewConsumeBatches } = require("../utils/stockUtils");
 
 const startOfDay = (value) => {
   const date = new Date(value);
@@ -718,6 +720,36 @@ exports.dayBookBalanceHistory = async (req, res) => {
   } catch (err) {
     console.error("Day Book Balance History Error:", err);
     res.status(500).json({ error: "Failed to load balance history" });
+  }
+};
+
+/* ================= FIFO DEBUG ================= */
+exports.fifoDebug = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const productId = req.query.productId;
+    const qty = Number(req.query.qty || 0);
+
+    if (!productId) {
+      return res.status(400).json({ error: "productId is required" });
+    }
+
+    const batches = await StockBatch.find({ companyId, productId })
+      .sort({ createdAt: 1, _id: 1 })
+      .select("_id sourceType sourceId totalQty remainingQty rate createdAt");
+
+    const preview = qty > 0
+      ? await previewConsumeBatches({ companyId, productId, quantity: qty })
+      : null;
+
+    res.json({
+      productId,
+      batches,
+      preview,
+    });
+  } catch (err) {
+    console.error("FIFO Debug Error:", err);
+    res.status(500).json({ error: "Failed to build FIFO debug report" });
   }
 };
 

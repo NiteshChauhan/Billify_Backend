@@ -1,10 +1,12 @@
 const Product = require("../models/Product");
 const StockLedger = require("../models/StockLedger");
+const StockBatch = require("../models/StockBatch");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const ReturnEntry = require("../models/Return");
 const Party = require("../models/Party");
 const mongoose = require("mongoose");
+const { getAvailableStock } = require("../utils/stockUtils");
 
 /* ================= CREATE PRODUCT ================= */
 exports.createProduct = async (req, res) => {
@@ -29,7 +31,7 @@ exports.createProduct = async (req, res) => {
     });
 
     if (Number(openingStock || 0) > 0) {
-      await StockLedger.create({
+      const ledger = await StockLedger.create({
         companyId: req.user.companyId,
         productId: product._id,
         type: "OPENING",
@@ -37,6 +39,16 @@ exports.createProduct = async (req, res) => {
         rate: Number(openingRate || 0),
         referenceType: "OPENING_STOCK",
         referenceId: product._id,
+      });
+
+      await StockBatch.create({
+        companyId: req.user.companyId,
+        productId: product._id,
+        sourceType: "OPENING",
+        sourceId: ledger._id,
+        totalQty: Number(openingStock || 0),
+        remainingQty: Number(openingStock || 0),
+        rate: Number(openingRate || 0),
       });
     }
 
@@ -69,58 +81,19 @@ exports.getProducts = async (req, res) => {
       Product.countDocuments(filter),
     ]);
 
-    const productIds = products.map((product) => product._id);
-    const stockSummary = productIds.length
-      ? await StockLedger.aggregate([
-          { $match: { companyId, productId: { $in: productIds } } },
-          {
-            $group: {
-              _id: "$productId",
-              currentStock: {
-                $sum: {
-                  $switch: {
-                    branches: [
-                      { case: { $in: ["$type", ["OPENING", "PURCHASE", "SALE_RETURN"]] }, then: "$quantity" },
-                      { case: { $in: ["$type", ["SALE", "PURCHASE_RETURN"]] }, then: { $multiply: ["$quantity", -1] } },
-                    ],
-                    default: 0,
-                  },
-                },
-              },
-              totalPurchaseQty: {
-                $sum: {
-                  $cond: [{ $eq: ["$type", "PURCHASE"] }, "$quantity", 0],
-                },
-              },
-            },
-          },
-        ])
-      : [];
-
-    const stockMap = new Map(
-      stockSummary.map((row) => [
-        String(row._id),
-        {
-          currentStock: Number(row.currentStock || 0),
-          totalPurchaseQty: Number(row.totalPurchaseQty || 0),
-        },
-      ]),
+    const productRows = await Promise.all(
+      products.map(async (product) => {
+        const currentStock = await getAvailableStock(companyId, product._id);
+        return {
+          ...product,
+          stock: Number(currentStock || 0),
+          inStock: Number(currentStock || 0),
+          totalStock: Number(currentStock || 0),
+          lastPurchasePrice: Number(product.lastPurchaseRate || 0),
+          lastSalePrice: Number(product.lastSalePrice || 0),
+        };
+      }),
     );
-
-    const productRows = products.map((product) => {
-      const summary = stockMap.get(String(product._id)) || {
-        currentStock: Number(product.openingStock || 0),
-        totalPurchaseQty: 0,
-      };
-      return {
-        ...product,
-        stock: summary.currentStock,
-        inStock: summary.currentStock,
-        totalStock: Number(product.openingStock || 0) + Number(summary.totalPurchaseQty || 0),
-        lastPurchasePrice: Number(product.lastPurchaseRate || 0),
-        lastSalePrice: Number(product.lastSalePrice || 0),
-      };
-    });
 
     if (!isPaginated) {
       return res.json(productRows);
@@ -223,7 +196,7 @@ exports.updateProduct = async (req, res) => {
     }
 
     if (!openingEntry && incomingOpeningStock > 0) {
-      await StockLedger.create({
+      const ledger = await StockLedger.create({
         companyId,
         productId,
         type: "OPENING",
@@ -232,10 +205,45 @@ exports.updateProduct = async (req, res) => {
         referenceType: "OPENING_STOCK",
         referenceId: productId,
       });
+      await StockBatch.create({
+        companyId,
+        productId,
+        sourceType: "OPENING",
+        sourceId: ledger._id,
+        totalQty: incomingOpeningStock,
+        remainingQty: incomingOpeningStock,
+        rate: incomingOpeningRate,
+      });
     } else if (openingEntry && openingChanged) {
       openingEntry.quantity = incomingOpeningStock;
       openingEntry.rate = incomingOpeningRate;
       await openingEntry.save();
+
+      if (incomingOpeningStock > 0) {
+        await StockBatch.updateOne(
+          {
+            companyId,
+            productId,
+            sourceType: "OPENING",
+            sourceId: openingEntry._id,
+          },
+          {
+            $set: {
+              totalQty: incomingOpeningStock,
+              remainingQty: incomingOpeningStock,
+              rate: incomingOpeningRate,
+            },
+          },
+          { upsert: true },
+        );
+      } else {
+        await StockBatch.deleteMany({
+          companyId,
+          productId,
+          sourceType: "OPENING",
+          sourceId: openingEntry._id,
+        });
+      }
     }
 
     res.json(product);
@@ -450,7 +458,7 @@ exports.bulkUploadProducts = async (req, res) => {
         });
 
         if (stock > 0) {
-          await StockLedger.create({
+          const ledger = await StockLedger.create({
             companyId: req.user.companyId,
             productId: product._id,
             type: "OPENING",
@@ -458,6 +466,16 @@ exports.bulkUploadProducts = async (req, res) => {
             rate: price,
             referenceType: "OPENING_STOCK",
             referenceId: product._id,
+          });
+
+          await StockBatch.create({
+            companyId: req.user.companyId,
+            productId: product._id,
+            sourceType: "OPENING",
+            sourceId: ledger._id,
+            totalQty: stock,
+            remainingQty: stock,
+            rate: price,
           });
         }
 
@@ -562,6 +580,8 @@ exports.getProductHistory = async (req, res) => {
       };
     });
 
+    const currentStock = await getAvailableStock(companyId, productId);
+
     res.json({
       product,
       summary: {
@@ -569,7 +589,7 @@ exports.getProductHistory = async (req, res) => {
         openingRate,
         totalPurchase,
         totalSale,
-        totalInStock: running,
+        totalInStock: Number(currentStock || 0),
       },
       rows,
     });

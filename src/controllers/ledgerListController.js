@@ -213,6 +213,77 @@ exports.getLedgerList = async (req, res) => {
         row.totalInvoices + Number(row._returns || 0) + Number(row._payments || 0);
     });
 
+    const matchesFilter = (entry) => {
+      if (filterType === "all") return true;
+      if (filterType === "party") return !!entry.partyId;
+      if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
+        return entry.paymentType === filterType;
+      }
+      if (filterType === "customer" || filterType === "supplier") {
+        if (!entry.partyId) return false;
+        const party = partyById.get(String(entry.partyId));
+        return party ? (party.roles || []).includes(filterType) : false;
+      }
+      return true;
+    };
+
+    const summaryTotals = { totalBillAmount: 0, totalOutstanding: 0, totalPaid: 0 };
+    const summaryKeyed = new Map();
+
+    const addSummaryEntry = (key, entry) => {
+      if (summaryKeyed.has(key)) return;
+      if (!matchesFilter(entry)) return;
+      summaryKeyed.set(key, entry);
+      summaryTotals.totalBillAmount += Number(entry.totalBillAmount || 0);
+      summaryTotals.totalPaid += Number(entry.totalPaid || 0);
+    };
+
+    sales.forEach((s) => {
+      const entry = {
+        partyId: s.partyId,
+        paymentType: normalizePaymentType(s.paymentType),
+        totalBillAmount: Number(s.totalAmount || 0),
+        totalPaid: 0,
+      };
+      addSummaryEntry(`sale:${s._id}`, entry);
+    });
+
+    purchases.forEach((p) => {
+      const entry = {
+        partyId: p.partyId,
+        paymentType: normalizePaymentType(p.paymentType),
+        totalBillAmount: Number(p.totalAmount || 0),
+        totalPaid: 0,
+      };
+      addSummaryEntry(`purchase:${p._id}`, entry);
+    });
+
+    returns.forEach((r) => {
+      const mappedPaymentType =
+        r.billType === "PURCHASE"
+          ? purchasePayTypeMap.get(String(r.billId)) || "credit"
+          : salesPayTypeMap.get(String(r.billId)) || "credit";
+      const entry = {
+        partyId: r.partyId,
+        paymentType: mappedPaymentType,
+        totalBillAmount: -Number(r.totalAmount || 0),
+        totalPaid: 0,
+      };
+      addSummaryEntry(`return:${r._id}`, entry);
+    });
+
+    payments.forEach((p) => {
+      const entry = {
+        partyId: p.partyId,
+        paymentType: paymentModeToChannel(p.paymentMode),
+        totalBillAmount: 0,
+        totalPaid: Number(p.amount || 0),
+      };
+      addSummaryEntry(`payment:${p._id}`, entry);
+    });
+
+    summaryTotals.totalOutstanding = summaryTotals.totalBillAmount - summaryTotals.totalPaid;
+
     // Apply filter rules
     let result = [];
     if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
@@ -227,7 +298,10 @@ exports.getLedgerList = async (req, res) => {
       result = [...partyRows, ...Array.from(channelAgg.values())];
     }
 
-    res.json(result);
+    res.json({
+      rows: result,
+      summary: summaryTotals,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

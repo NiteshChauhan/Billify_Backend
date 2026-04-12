@@ -39,6 +39,20 @@ const salesInvoiceSchema = new mongoose.Schema(
         quantity: Number,
         rate: Number,
         amount: Number,
+        actualCost: { type: Number, default: 0 },
+        profitAmount: { type: Number, default: 0 },
+        costBreakdown: [
+          {
+            batchId: {
+              type: mongoose.Schema.Types.ObjectId,
+              ref: "StockBatch",
+            },
+            qty: Number,
+            rate: Number,
+            cost: Number,
+            sourceHint: String,
+          },
+        ],
       },
     ],
 

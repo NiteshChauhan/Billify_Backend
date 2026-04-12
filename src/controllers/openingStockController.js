@@ -1,4 +1,5 @@
 const StockLedger = require("../models/StockLedger");
+const StockBatch = require("../models/StockBatch");
 
 /* ---------------- ADD OPENING STOCK ---------------- */
 exports.addOpeningStock = async (req, res) => {
@@ -18,13 +19,23 @@ exports.addOpeningStock = async (req, res) => {
       });
     }
 
-    await StockLedger.create({
+    const ledger = await StockLedger.create({
       companyId: req.user.companyId,
       productId,
       type: "OPENING",
       quantity,
       rate,
       referenceType: "OPENING_STOCK"
+    });
+
+    await StockBatch.create({
+      companyId: req.user.companyId,
+      productId,
+      sourceType: "OPENING",
+      sourceId: ledger._id,
+      totalQty: Number(quantity || 0),
+      remainingQty: Number(quantity || 0),
+      rate: Number(rate || 0),
     });
 
     res.json({ message: "Opening stock added successfully" });
@@ -101,6 +112,23 @@ exports.updateOpeningStock = async (req, res) => {
     stock.quantity = Number(quantity);
     stock.rate = Number(rate || 0);
     await stock.save();
+
+    await StockBatch.updateOne(
+      {
+        companyId: req.user.companyId,
+        productId,
+        sourceType: "OPENING",
+        sourceId: stock._id,
+      },
+      {
+        $set: {
+          totalQty: Number(stock.quantity || 0),
+          remainingQty: Number(stock.quantity || 0),
+          rate: Number(stock.rate || 0),
+        },
+      },
+      { upsert: true },
+    );
 
     res.json({
       message: "Opening stock updated successfully",

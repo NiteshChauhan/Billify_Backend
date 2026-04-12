@@ -5,6 +5,11 @@ const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
 const Product = require("../models/Product");
 const { validateStockForSale } = require("../utils/stockValidation");
+const {
+  consumeBatches,
+  ensureLegacyBatch,
+  restoreBatchesFromBreakdown,
+} = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const toSalesResponse = (invoiceDoc) => {
@@ -75,6 +80,9 @@ exports.createSalesInvoice = async (req, res) => {
     }
 
     // 1️⃣ Validate stock
+    for (const item of items) {
+      await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
+    }
     await validateStockForSale(req.user.companyId, items);
 
     // 2️⃣ Calculate totals
@@ -86,6 +94,19 @@ exports.createSalesInvoice = async (req, res) => {
       i.amount = i.quantity * i.rate;
       subtotal += i.amount;
     });
+
+    for (const item of items) {
+      const { breakdown, actualCost } = await consumeBatches({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        quantity: item.quantity,
+        asOfDate: invoiceDate || new Date(),
+        sourceHint: "SALE",
+      });
+      item.costBreakdown = breakdown;
+      item.actualCost = Number(actualCost || 0);
+      item.profitAmount = Number((item.amount - item.actualCost).toFixed(4));
+    }
 
     const totalAmount = subtotal + tax;
 
@@ -170,6 +191,14 @@ exports.createSalesInvoice = async (req, res) => {
     res.json(toSalesResponse(invoice));
   } catch (err) {
     console.error(err);
+    if (err.code === "INSUFFICIENT_STOCK") {
+      return res.status(400).json({
+        error: "Insufficient stock",
+        productId: err.productId,
+        productName: err.productName,
+        availableStock: err.availableStock,
+      });
+    }
     res.status(400).json({ error: err.message });
   }
 };
@@ -269,6 +298,18 @@ exports.updateSalesInvoice = async (req, res) => {
       await oldParty.save();
     }
 
+    if (Array.isArray(invoice.items)) {
+      for (const item of invoice.items) {
+        if (Array.isArray(item.costBreakdown) && item.costBreakdown.length) {
+          await restoreBatchesFromBreakdown(
+            req.user.companyId,
+            item.costBreakdown,
+            item.quantity,
+          );
+        }
+      }
+    }
+
     // Remove old stock ledger SALE entries
     await StockLedger.deleteMany({
       referenceId: invoice._id,
@@ -282,6 +323,9 @@ exports.updateSalesInvoice = async (req, res) => {
     });
 
     /* ================= VALIDATE STOCK AGAIN ================= */
+    for (const item of items) {
+      await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
+    }
     await validateStockForSale(req.user.companyId, items);
 
     /* ================= RECALCULATE ================= */
@@ -305,6 +349,19 @@ exports.updateSalesInvoice = async (req, res) => {
     }
 
     const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
+
+    for (const item of items) {
+      const { breakdown, actualCost } = await consumeBatches({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        quantity: item.quantity,
+        asOfDate: invoiceDate || new Date(),
+        sourceHint: "SALE_EDIT",
+      });
+      item.costBreakdown = breakdown;
+      item.actualCost = Number(actualCost || 0);
+      item.profitAmount = Number((item.amount - item.actualCost).toFixed(4));
+    }
 
     /* ================= UPDATE INVOICE ================= */
     let newParty = null;
@@ -381,6 +438,14 @@ exports.updateSalesInvoice = async (req, res) => {
     res.json(toSalesResponse(invoice));
   } catch (err) {
     console.error(err);
+    if (err.code === "INSUFFICIENT_STOCK") {
+      return res.status(400).json({
+        error: "Insufficient stock",
+        productId: err.productId,
+        productName: err.productName,
+        availableStock: err.availableStock,
+      });
+    }
     res.status(500).json({
       message: "Failed to update sales invoice",
       error: err.message,

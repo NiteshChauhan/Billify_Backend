@@ -1,5 +1,6 @@
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const StockLedger = require("../models/StockLedger");
+const StockBatch = require("../models/StockBatch");
 const Party = require("../models/Party");
 const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
@@ -142,6 +143,15 @@ exports.createPurchaseInvoice = async (req, res) => {
         referenceType: "PURCHASE_INVOICE",
         referenceId: invoice._id,
       });
+      await StockBatch.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        sourceType: "PURCHASE",
+        sourceId: invoice._id,
+        totalQty: Number(item.quantity || 0),
+        remainingQty: Number(item.quantity || 0),
+        rate: Number(item.rate || 0),
+      });
       await Product.updateOne(
         { _id: item.productId, companyId: req.user.companyId },
         { $set: { lastPurchaseRate: Number(item.rate || 0) } },
@@ -274,6 +284,11 @@ exports.updatePurchaseInvoice = async (req, res) => {
       referenceId: invoice._id,
       referenceType: "PURCHASE_INVOICE",
     });
+    await StockBatch.deleteMany({
+      companyId: req.user.companyId,
+      sourceType: "PURCHASE",
+      sourceId: invoice._id,
+    });
 
     await Payment.deleteMany({
       invoiceId: invoice._id,
@@ -347,6 +362,15 @@ exports.updatePurchaseInvoice = async (req, res) => {
         rate: item.rate,
         referenceType: "PURCHASE_INVOICE",
         referenceId: invoice._id,
+      });
+      await StockBatch.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        sourceType: "PURCHASE",
+        sourceId: invoice._id,
+        totalQty: Number(item.quantity || 0),
+        remainingQty: Number(item.quantity || 0),
+        rate: Number(item.rate || 0),
       });
       await Product.updateOne(
         { _id: item.productId, companyId: req.user.companyId },
