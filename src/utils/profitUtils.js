@@ -1,7 +1,9 @@
 const Payment = require("../models/Payment");
 const Product = require("../models/Product");
+const ReturnEntry = require("../models/Return");
 const SalesInvoice = require("../models/SalesInvoice");
 const StockLedger = require("../models/StockLedger");
+const { computeLedgerAverageCost } = require("./stockUtils");
 
 const round2 = (value) => Number(Number(value || 0).toFixed(2));
 
@@ -124,6 +126,36 @@ const buildSaleInvoiceMetrics = async (companyId, invoices = []) => {
   return invoiceMetrics;
 };
 
+const computeReturnItemCost = async (companyId, saleItem, returnQty, returnDate) => {
+  const qty = Number(returnQty || 0);
+  if (!(qty > 0)) return 0;
+  const breakdown = Array.isArray(saleItem.costBreakdown) ? saleItem.costBreakdown : [];
+  if (breakdown.length) {
+    let remaining = qty;
+    let cost = 0;
+    for (const row of breakdown) {
+      if (remaining <= 0) break;
+      const rowQty = Number(row.qty || 0);
+      if (!(rowQty > 0)) continue;
+      const used = Math.min(rowQty, remaining);
+      const rowCost = Number(row.cost || 0);
+      const unitCost = rowQty > 0 ? rowCost / rowQty : 0;
+      cost += used * unitCost;
+      remaining -= used;
+    }
+    return Number(cost.toFixed(4));
+  }
+
+  const actualCost = Number(saleItem.actualCost || 0);
+  const soldQty = Number(saleItem.quantity || 0);
+  if (soldQty > 0 && actualCost > 0) {
+    return Number(((actualCost / soldQty) * qty).toFixed(4));
+  }
+
+  const avgRate = await computeLedgerAverageCost(companyId, saleItem.productId, returnDate || new Date());
+  return Number((avgRate * qty).toFixed(4));
+};
+
 exports.getProfitSummary = async (companyId, fromDate, toDate, options = {}) => {
   const { includeEntries = false } = options;
 
@@ -209,6 +241,79 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, options = {}) => 
         salePrice: saleAmount,
         costPrice: costAmount,
         profit: profitAmount,
+      });
+    }
+  }
+
+  const paidSalesMap = new Map(paidSales.map((invoice) => [String(invoice._id), invoice]));
+  const saleReturns = await ReturnEntry.find({
+    companyId,
+    returnType: "SALE_RETURN",
+    returnDate: { $gte: fromDate, $lte: toDate },
+  })
+    .populate("partyId", "name")
+    .populate("items.productId", "name");
+
+  for (const ret of saleReturns) {
+    const saleInvoice = paidSalesMap.get(String(ret.billId));
+    if (!saleInvoice) {
+      continue;
+    }
+
+    let returnSaleAmount = 0;
+    let returnCostAmount = 0;
+    let returnQty = 0;
+    const productNames = new Set();
+
+    for (const item of ret.items || []) {
+      const qty = Number(item.quantity || 0);
+      const amount = Number(item.amount || qty * Number(item.rate || 0));
+      returnSaleAmount += amount;
+      returnQty += qty;
+
+      const saleItem = (saleInvoice.items || []).find(
+        (row) => String(row.productId?._id || row.productId) === String(item.productId?._id || item.productId),
+      );
+      if (saleItem) {
+        returnCostAmount += await computeReturnItemCost(companyId, saleItem, qty, ret.returnDate);
+      } else {
+        const avgRate = await computeLedgerAverageCost(companyId, item.productId, ret.returnDate);
+        returnCostAmount += avgRate * qty;
+      }
+
+      const productName = item.productId?.name;
+      if (productName) {
+        productNames.add(productName);
+      }
+    }
+
+    if (!(returnSaleAmount > 0)) continue;
+
+    const saleAmount = round2(returnSaleAmount);
+    const costAmount = round2(returnCostAmount);
+    const profitAmount = round2(saleAmount - costAmount);
+
+    totalSales -= saleAmount;
+    totalCost -= costAmount;
+
+    const dayKey = new Date(ret.returnDate).toISOString().slice(0, 10);
+    if (!dailyMap[dayKey]) {
+      dailyMap[dayKey] = { date: dayKey, sales: 0, cost: 0, profit: 0 };
+    }
+    dailyMap[dayKey].sales -= saleAmount;
+    dailyMap[dayKey].cost -= costAmount;
+    dailyMap[dayKey].profit -= profitAmount;
+
+    if (includeEntries) {
+      entries.push({
+        date: ret.returnDate,
+        invoiceNo: ret.returnNo || "RETURN",
+        partyName: ret.partyId?.name || "Cash",
+        productName: [...productNames].join(", ") || "Products",
+        quantity: round2(returnQty),
+        salePrice: -saleAmount,
+        costPrice: -costAmount,
+        profit: -profitAmount,
       });
     }
   }

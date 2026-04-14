@@ -3,12 +3,17 @@ const SalesInvoice = require("../models/SalesInvoice");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const StockLedger = require("../models/StockLedger");
 const Party = require("../models/Party");
+const Product = require("../models/Product");
+const Payment = require("../models/Payment");
+const StockBatch = require("../models/StockBatch");
+const BankAccount = require("../models/BankAccount");
 const {
   getAvailableStock,
   restoreBatchesFromBreakdown,
   restoreByAverageCost,
   consumePurchaseBatches,
   consumeBatches,
+  computeLedgerAverageCost,
 } = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
@@ -34,9 +39,274 @@ const validateItems = (items = []) => {
   });
 };
 
+const computeReturnCostFromBreakdown = (breakdown = [], returnQty = 0) => {
+  let remaining = Number(returnQty || 0);
+  let cost = 0;
+  for (const row of breakdown) {
+    if (remaining <= 0) break;
+    const qty = Number(row.qty || 0);
+    if (!(qty > 0)) continue;
+    const used = Math.min(qty, remaining);
+    const rowCost = Number(row.cost || 0);
+    const unitCost = qty > 0 ? rowCost / qty : 0;
+    cost += used * unitCost;
+    remaining -= used;
+  }
+  return Number(cost.toFixed(4));
+};
+
+const createReplacementSale = async ({
+  companyId,
+  partyId,
+  items = [],
+  paymentType = "credit",
+  bankAccountId,
+  paidAmount = 0,
+  invoiceDate,
+}) => {
+  const normalizedPaymentType = String(paymentType || "credit").toLowerCase();
+  if (!["cash", "bank", "credit"].includes(normalizedPaymentType)) {
+    throw new Error("Invalid replacement paymentType");
+  }
+
+  let bankId = null;
+  if (normalizedPaymentType === "bank") {
+    if (!bankAccountId) {
+      throw new Error("bankAccountId is required for bank payments");
+    }
+    const bankAccount = await BankAccount.findOne({ _id: bankAccountId, companyId }).select("_id");
+    if (!bankAccount) {
+      throw new Error("Invalid bank account");
+    }
+    bankId = bankAccount._id;
+  }
+
+  let subtotal = 0;
+  items.forEach((i) => {
+    if (!i.productId || !i.quantity || !i.rate) {
+      throw new Error("Invalid replacement item");
+    }
+    i.amount = i.quantity * i.rate;
+    subtotal += i.amount;
+  });
+
+  const totalAmount = subtotal;
+  const finalPaidAmount =
+    normalizedPaymentType === "credit"
+      ? Number(paidAmount || 0)
+      : Number(totalAmount || 0);
+
+  const count = await SalesInvoice.countDocuments({ companyId });
+  const invoiceNo = `SAL-${count + 1}`;
+
+  for (const item of items) {
+    const { breakdown, actualCost } = await consumeBatches({
+      companyId,
+      productId: item.productId,
+      quantity: item.quantity,
+      asOfDate: invoiceDate || new Date(),
+      sourceHint: "SALE_REPLACEMENT",
+    });
+    item.costBreakdown = breakdown;
+    item.actualCost = Number(actualCost || 0);
+    item.profitAmount = Number((item.amount - item.actualCost).toFixed(4));
+  }
+
+  const invoice = await SalesInvoice.create({
+    companyId,
+    partyId,
+    paymentType: normalizedPaymentType,
+    bankAccountId: bankId,
+    invoiceNo,
+    invoiceDate,
+    items,
+    subtotal,
+    tax: 0,
+    totalAmount,
+    paidAmount: finalPaidAmount,
+    pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
+    status:
+      finalPaidAmount >= totalAmount
+        ? "PAID"
+        : finalPaidAmount > 0
+          ? "PARTIAL"
+          : "DUE",
+  });
+
+  for (const item of items) {
+    await StockLedger.create({
+      companyId,
+      productId: item.productId,
+      type: "SALE",
+      quantity: item.quantity,
+      rate: item.rate,
+      referenceType: "SALES_INVOICE",
+      referenceId: invoice._id,
+    });
+    await Product.updateOne(
+      { _id: item.productId, companyId },
+      { $set: { lastSalePrice: Number(item.rate || 0) } },
+    );
+  }
+
+  if (partyId) {
+    const party = await Party.findById(partyId);
+    if (party) {
+      party.balance = (party.balance || 0) + (totalAmount - finalPaidAmount);
+      await party.save();
+    }
+  }
+
+  if (finalPaidAmount > 0) {
+    await Payment.create({
+      companyId,
+      partyId: partyId || undefined,
+      invoiceType: "SALE",
+      invoiceId: invoice._id,
+      paymentType: "RECEIVED",
+      amount: finalPaidAmount,
+      paymentMode: normalizedPaymentType === "bank" ? "BANK" : "CASH",
+      bankAccountId: bankId,
+      remarks: "Replacement bill payment",
+      paymentDate: invoice.invoiceDate || new Date(),
+      adjustType: "bill",
+    });
+  }
+
+  return invoice;
+};
+
+const createReplacementPurchase = async ({
+  companyId,
+  partyId,
+  items = [],
+  paymentType = "credit",
+  bankAccountId,
+  paidAmount = 0,
+  invoiceNo,
+  invoiceDate,
+}) => {
+  const normalizedPaymentType = String(paymentType || "credit").toLowerCase();
+  if (!["cash", "bank", "credit"].includes(normalizedPaymentType)) {
+    throw new Error("Invalid replacement paymentType");
+  }
+
+  const normalizedInvoiceNo = String(invoiceNo || "").trim();
+  if (!normalizedInvoiceNo) {
+    throw new Error("Replacement purchase bill number is required");
+  }
+
+  const duplicateInvoice = await PurchaseInvoice.findOne({
+    companyId,
+    invoiceNo: normalizedInvoiceNo,
+  }).select("_id");
+  if (duplicateInvoice) {
+    throw new Error("Replacement purchase bill number already exists");
+  }
+
+  let bankId = null;
+  if (normalizedPaymentType === "bank") {
+    if (!bankAccountId) {
+      throw new Error("bankAccountId is required for bank payments");
+    }
+    const bankAccount = await BankAccount.findOne({ _id: bankAccountId, companyId }).select("_id");
+    if (!bankAccount) {
+      throw new Error("Invalid bank account");
+    }
+    bankId = bankAccount._id;
+  }
+
+  let subtotal = 0;
+  items.forEach((i) => {
+    if (!i.productId || !i.quantity || !i.rate) {
+      throw new Error("Invalid replacement item");
+    }
+    i.amount = i.quantity * i.rate;
+    subtotal += i.amount;
+  });
+
+  const totalAmount = subtotal;
+  const finalPaidAmount =
+    normalizedPaymentType === "credit"
+      ? Number(paidAmount || 0)
+      : Number(totalAmount || 0);
+
+  const invoice = await PurchaseInvoice.create({
+    companyId,
+    partyId,
+    paymentType: normalizedPaymentType,
+    bankAccountId: bankId,
+    invoiceNo: normalizedInvoiceNo,
+    invoiceDate,
+    items,
+    subtotal,
+    tax: 0,
+    totalAmount,
+    paidAmount: finalPaidAmount,
+    pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
+    status:
+      finalPaidAmount >= totalAmount
+        ? "PAID"
+        : finalPaidAmount > 0
+          ? "PARTIAL"
+          : "DUE",
+  });
+
+  for (const item of items) {
+    await StockLedger.create({
+      companyId,
+      productId: item.productId,
+      type: "PURCHASE",
+      quantity: item.quantity,
+      rate: item.rate,
+      referenceType: "PURCHASE_INVOICE",
+      referenceId: invoice._id,
+    });
+    await StockBatch.create({
+      companyId,
+      productId: item.productId,
+      sourceType: "PURCHASE",
+      sourceId: invoice._id,
+      totalQty: Number(item.quantity || 0),
+      remainingQty: Number(item.quantity || 0),
+      rate: Number(item.rate || 0),
+    });
+    await Product.updateOne(
+      { _id: item.productId, companyId },
+      { $set: { lastPurchaseRate: Number(item.rate || 0) } },
+    );
+  }
+
+  if (partyId) {
+    const party = await Party.findById(partyId);
+    if (party) {
+      party.balance = (party.balance || 0) + (totalAmount - finalPaidAmount);
+      await party.save();
+    }
+  }
+
+  if (finalPaidAmount > 0) {
+    await Payment.create({
+      companyId,
+      partyId: partyId || undefined,
+      invoiceType: "PURCHASE",
+      invoiceId: invoice._id,
+      paymentType: "PAID",
+      amount: finalPaidAmount,
+      paymentMode: normalizedPaymentType === "bank" ? "BANK" : "CASH",
+      bankAccountId: bankId,
+      remarks: "Replacement bill payment",
+      paymentDate: invoice.invoiceDate || new Date(),
+      adjustType: "bill",
+    });
+  }
+
+  return invoice;
+};
+
 exports.createSaleReturn = async (req, res) => {
   try {
-    const { billId, items, remarks, returnDate } = req.body;
+    const { billId, items, remarks, returnDate, replacement } = req.body;
     const companyId = req.user.companyId;
 
     const invoice = await SalesInvoice.findOne({ _id: billId, companyId });
@@ -85,8 +355,14 @@ exports.createSaleReturn = async (req, res) => {
       );
       if (soldItem && Array.isArray(soldItem.costBreakdown) && soldItem.costBreakdown.length) {
         await restoreBatchesFromBreakdown(companyId, soldItem.costBreakdown, item.quantity);
+        item.costAmount = computeReturnCostFromBreakdown(
+          soldItem.costBreakdown,
+          item.quantity,
+        );
       } else {
         await restoreByAverageCost(companyId, item.productId, item.quantity, returnDate || new Date());
+        const avgRate = await computeLedgerAverageCost(companyId, item.productId, returnDate || new Date());
+        item.costAmount = Number((avgRate * Number(item.quantity || 0)).toFixed(4));
       }
     }
 
@@ -129,7 +405,33 @@ exports.createSaleReturn = async (req, res) => {
       await party.save();
     }
 
-    res.json(returnEntry);
+    let replacementInvoice = null;
+    let replacementError = null;
+    if (replacement?.enabled && Array.isArray(replacement.items) && replacement.items.length) {
+      try {
+        replacementInvoice = await createReplacementSale({
+          companyId,
+          partyId: invoice.partyId,
+          items: replacement.items,
+          paymentType: replacement.paymentType,
+          bankAccountId: replacement.bankAccountId,
+          paidAmount: replacement.paidAmount,
+          invoiceDate: returnDate,
+        });
+        returnEntry.hasReplacement = true;
+        returnEntry.replacementBillId = replacementInvoice._id;
+        returnEntry.replacementBillType = "SALE";
+        returnEntry.netDifference = Number((replacementInvoice.totalAmount || 0) - totalAmount);
+        await returnEntry.save();
+      } catch (err) {
+        replacementError = err.message;
+      }
+    }
+
+    res.json({
+      ...returnEntry.toObject(),
+      replacementError,
+    });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }
@@ -137,7 +439,7 @@ exports.createSaleReturn = async (req, res) => {
 
 exports.createPurchaseReturn = async (req, res) => {
   try {
-    const { billId, items, remarks, returnDate, returnNo } = req.body;
+    const { billId, items, remarks, returnDate, returnNo, replacement } = req.body;
     const companyId = req.user.companyId;
     const normalizedReturnNo = String(returnNo || "").trim();
 
@@ -248,7 +550,34 @@ exports.createPurchaseReturn = async (req, res) => {
       await party.save();
     }
 
-    res.json(returnEntry);
+    let replacementInvoice = null;
+    let replacementError = null;
+    if (replacement?.enabled && Array.isArray(replacement.items) && replacement.items.length) {
+      try {
+        replacementInvoice = await createReplacementPurchase({
+          companyId,
+          partyId: invoice.partyId,
+          items: replacement.items,
+          paymentType: replacement.paymentType,
+          bankAccountId: replacement.bankAccountId,
+          paidAmount: replacement.paidAmount,
+          invoiceNo: replacement.invoiceNo,
+          invoiceDate: returnDate,
+        });
+        returnEntry.hasReplacement = true;
+        returnEntry.replacementBillId = replacementInvoice._id;
+        returnEntry.replacementBillType = "PURCHASE";
+        returnEntry.netDifference = Number((replacementInvoice.totalAmount || 0) - totalAmount);
+        await returnEntry.save();
+      } catch (err) {
+        replacementError = err.message;
+      }
+    }
+
+    res.json({
+      ...returnEntry.toObject(),
+      replacementError,
+    });
   } catch (err) {
     res.status(400).json({ message: err.message });
   }

@@ -8,6 +8,7 @@ const CompanyBalance = require("../models/CompanyBalance");
 const Expense = require("../models/Expense");
 const LoanEntry = require("../models/LoanEntry");
 const StockBatch = require("../models/StockBatch");
+const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { getProfitSummary } = require("../utils/profitUtils");
 const { previewConsumeBatches } = require("../utils/stockUtils");
@@ -170,7 +171,7 @@ const fetchDayBookTransactions = async ({
     ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
   };
 
-  const [rawSales, rawPurchases, rawPayments, expenses, loans] = await Promise.all([
+  const [rawSales, rawPurchases, rawPayments, expenses, loans, returns] = await Promise.all([
     SalesInvoice.find(invoiceQuery)
       .populate("partyId", "name")
       .populate("bankAccountId", "accountName")
@@ -190,6 +191,12 @@ const fetchDayBookTransactions = async ({
     LoanEntry.find(loanQuery)
       .populate("bankAccountId", "accountName")
       .sort({ date: 1, createdAt: 1 }),
+    ReturnEntry.find({
+      companyId,
+      returnDate: { $gte: fromDate, $lte: toDate },
+    })
+      .populate("partyId", "name")
+      .sort({ returnDate: 1, createdAt: 1 }),
   ]);
 
   const payments = (await loadPaymentInvoiceMeta(companyId, rawPayments))
@@ -270,13 +277,40 @@ const fetchDayBookTransactions = async ({
     bankAccountName: loan.bankAccountId?.accountName || "-",
   }));
 
-  const rows = [...salesRows, ...purchaseRows, ...paymentRows, ...expenseRows, ...loanRows].sort(
+  const returnRows = returns.map((ret) => {
+    const linkedInvoice =
+      ret.billType === "SALE"
+        ? rawSales.find((inv) => String(inv._id) === String(ret.billId))
+        : rawPurchases.find((inv) => String(inv._id) === String(ret.billId));
+    const invoicePaymentType = String(linkedInvoice?.paymentType || "credit").toLowerCase();
+    const invoiceDayBookType =
+      invoicePaymentType === "cash" || invoicePaymentType === "bank" ? invoicePaymentType : null;
+
+    return {
+      date: ret.returnDate,
+      type: ret.returnType === "PURCHASE_RETURN" ? "purchase_return" : "sale_return",
+      partyName: ret.partyId?.name || "Cash",
+      paymentType: invoiceDayBookType,
+      amount: Number(ret.totalAmount || 0),
+      billId: ret._id,
+      referenceId: ret.billId,
+      invoiceNo: ret.returnNo || "-",
+    };
+  });
+
+  const filteredReturnRows = returnRows.filter(
+    (row) =>
+      row.paymentType &&
+      (paymentTypeFilter === "all" || row.paymentType === paymentTypeFilter),
+  );
+
+  const rows = [...salesRows, ...purchaseRows, ...filteredReturnRows, ...paymentRows, ...expenseRows, ...loanRows].sort(
     (a, b) => new Date(a.date) - new Date(b.date),
   );
 
   const summary = {
-    totalSales: sumAmount(salesRows),
-    totalPurchase: sumAmount(purchaseRows),
+    totalSales: sumAmount(salesRows) - sumAmount(filteredReturnRows.filter((row) => row.type === "sale_return")),
+    totalPurchase: sumAmount(purchaseRows) - sumAmount(filteredReturnRows.filter((row) => row.type === "purchase_return")),
     totalPaymentReceived: sumAmount(
       paymentRows.filter((row) => row.paymentDirection === "received"),
     ),
@@ -527,7 +561,7 @@ exports.dailyReport = async (req, res) => {
     const billTypeFilter = String(req.query.type || "all").toLowerCase();
     const search = String(req.query.search || "").trim().toLowerCase();
     const validPaymentTypes = ["all", "cash", "bank"];
-    const validBillTypes = ["all", "sale", "purchase", "payment", "loan"];
+    const validBillTypes = ["all", "sale", "purchase", "sale_return", "purchase_return", "payment", "expense", "loan"];
 
     if (!validPaymentTypes.includes(paymentTypeFilter)) {
       return res.status(400).json({ error: "Invalid paymentType" });
@@ -564,12 +598,20 @@ exports.dailyReport = async (req, res) => {
       .filter((row) => billTypeFilter === "all" || row.type === billTypeFilter)
       .sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    const totalSales = rows
-      .filter((row) => row.type === "sale")
-      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
-    const totalPurchase = rows
-      .filter((row) => row.type === "purchase")
-      .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalSales =
+      rows
+        .filter((row) => row.type === "sale")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0) -
+      rows
+        .filter((row) => row.type === "sale_return")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const totalPurchase =
+      rows
+        .filter((row) => row.type === "purchase")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0) -
+      rows
+        .filter((row) => row.type === "purchase_return")
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0);
     const totalPaymentReceived = rows
       .filter((row) => row.type === "payment" && row.paymentDirection === "received")
       .reduce((sum, row) => sum + Number(row.amount || 0), 0);
@@ -671,7 +713,9 @@ exports.dayBookBalanceHistory = async (req, res) => {
       };
 
       if (row.type === "sale") current.sales += Number(row.amount || 0);
+      if (row.type === "sale_return") current.sales -= Number(row.amount || 0);
       if (row.type === "purchase") current.purchase += Number(row.amount || 0);
+      if (row.type === "purchase_return") current.purchase -= Number(row.amount || 0);
       if (row.type === "expense") current.expenses += Number(row.amount || 0);
       if (row.type === "payment" && row.paymentDirection === "received") current.paymentReceived += Number(row.amount || 0);
       if (row.type === "payment" && row.paymentDirection === "paid") current.paymentPaid += Number(row.amount || 0);

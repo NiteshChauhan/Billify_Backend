@@ -10,7 +10,7 @@ const returnSchema = new mongoose.Schema(
     partyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Party",
-      required: true,
+      default: null,
     },
     returnType: {
       type: String,
@@ -52,10 +52,15 @@ const returnSchema = new mongoose.Schema(
         quantity: { type: Number, required: true },
         rate: { type: Number, required: true },
         amount: { type: Number, required: true },
+        costAmount: { type: Number, default: 0 },
       },
     ],
     totalAmount: { type: Number, required: true },
     remarks: String,
+    hasReplacement: { type: Boolean, default: false },
+    replacementBillId: { type: mongoose.Schema.Types.ObjectId },
+    replacementBillType: { type: String, enum: ["SALE", "PURCHASE"] },
+    netDifference: { type: Number, default: 0 },
   },
   { timestamps: true },
 );
