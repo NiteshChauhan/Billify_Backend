@@ -1,4 +1,3 @@
-const puppeteer = require("puppeteer");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -12,7 +11,42 @@ const launchArgs = [
   "--font-render-hinting=none",
 ];
 
-const resolveExecutablePath = () => {
+const isVercelRuntime =
+  process.env.VERCEL === "1" ||
+  process.env.VERCEL_ENV ||
+  process.env.AWS_REGION ||
+  process.env.LAMBDA_TASK_ROOT;
+
+const loadBrowserRuntime = async () => {
+  if (isVercelRuntime) {
+    const chromium = require("@sparticuz/chromium");
+    const puppeteerCore = require("puppeteer-core");
+    const executablePath = await chromium.executablePath();
+
+    return {
+      puppeteer: puppeteerCore,
+      launchOptions: {
+        headless: true,
+        executablePath,
+        args: [...chromium.args, ...launchArgs],
+        defaultViewport: chromium.defaultViewport,
+      },
+    };
+  }
+
+  const puppeteer = require("puppeteer");
+  return {
+    puppeteer,
+    launchOptions: {
+      headless: true,
+      executablePath: resolveExecutablePath(puppeteer),
+      args: launchArgs,
+      userDataDir: browserUserDataDir,
+    },
+  };
+};
+
+const resolveExecutablePath = (puppeteer) => {
   if (process.env.PUPPETEER_EXECUTABLE_PATH) {
     return process.env.PUPPETEER_EXECUTABLE_PATH;
   }
@@ -36,17 +70,14 @@ const cleanupUserDataDir = () => {
 
 const getBrowser = async () => {
   if (!browserPromise) {
-    browserUserDataDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), `billing-pdf-${process.pid}-`),
-    );
+    if (!isVercelRuntime) {
+      browserUserDataDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), `billing-pdf-${process.pid}-`),
+      );
+    }
 
-    browserPromise = puppeteer
-      .launch({
-        headless: true,
-        executablePath: resolveExecutablePath(),
-        userDataDir: browserUserDataDir,
-        args: launchArgs,
-      })
+    browserPromise = loadBrowserRuntime()
+      .then(({ puppeteer, launchOptions }) => puppeteer.launch(launchOptions))
       .then((browser) => {
         browser.on("disconnected", () => {
           browserPromise = null;
