@@ -2,7 +2,8 @@
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Company = require("../models/Company");
 const Party = require("../models/Party");
-const generatePDF = require("../services/pdfInvoiceService");
+const { generateInvoicePdf } = require("../services/invoicePdfService");
+const { normalizePdfLanguage } = require("../utils/pdfLanguage");
 
 exports.salesInvoicePDF = async (req, res) => {
   const invoice = await SalesInvoice.findById(req.params.id).populate("items.productId", "name");
@@ -13,7 +14,9 @@ exports.salesInvoicePDF = async (req, res) => {
   const company = await Company.findById(invoice.companyId);
   const party = await Party.findById(invoice.partyId);
 
-  generatePDF(res, invoice, company, party, "SALE");
+  await generateInvoicePdf(res, invoice, company, party, "SALE", {
+    language: normalizePdfLanguage(req.query.language || company?.pdfLanguage),
+  });
 };
 
 exports.purchaseInvoicePDF = async (req, res) => {
@@ -25,5 +28,7 @@ exports.purchaseInvoicePDF = async (req, res) => {
   const company = await Company.findById(invoice.companyId);
   const party = await Party.findById(invoice.partyId);
 
-  generatePDF(res, invoice, company, party, "PURCHASE");
+  await generateInvoicePdf(res, invoice, company, party, "PURCHASE", {
+    language: normalizePdfLanguage(req.query.language || company?.pdfLanguage),
+  });
 };

@@ -1,8 +1,8 @@
-const Party = require("../models/Party");
-const PurchaseInvoice = require("../models/PurchaseInvoice");
-const SalesInvoice = require("../models/SalesInvoice");
-const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const {
+  getPartyBalanceSummaries,
+  getRoleOutstandingRows,
+} = require("../utils/partyBalanceSummary");
 
 const normalizeRole = (role = "") => {
   const value = String(role).toLowerCase();
@@ -10,65 +10,8 @@ const normalizeRole = (role = "") => {
   return value;
 };
 
-const buildRangeFilter = (req) => {
-  const range = getDateRangeFromQuery(req.query);
-  if (!range) return {};
-  return { invoiceDate: { $gte: range.fromDate, $lte: range.toDate } };
-};
-
-const buildOutstandingForRole = async ({ companyId, role, rangeFilter }) => {
-  const parties = await Party.find({
-    companyId,
-    isActive: true,
-    roles: role,
-  });
-
-  const invoices =
-    role === "supplier"
-      ? await PurchaseInvoice.find({ companyId, ...rangeFilter })
-      : await SalesInvoice.find({ companyId, ...rangeFilter });
-  const returns = await ReturnEntry.find({
-    companyId,
-    ...(role === "supplier"
-      ? { returnType: "PURCHASE_RETURN" }
-      : { returnType: "SALE_RETURN" }),
-    ...(rangeFilter.invoiceDate ? { returnDate: rangeFilter.invoiceDate } : {}),
-  }).select("partyId totalAmount");
-
-  const invoiceMap = {};
-  invoices.forEach((inv) => {
-    const id = inv.partyId?.toString();
-    if (!id) return;
-    if (!invoiceMap[id]) invoiceMap[id] = { total: 0, paid: 0, returned: 0 };
-    invoiceMap[id].total += inv.totalAmount || 0;
-    invoiceMap[id].paid += inv.paidAmount || 0;
-  });
-  returns.forEach((ret) => {
-    const id = ret.partyId?.toString();
-    if (!id) return;
-    if (!invoiceMap[id]) invoiceMap[id] = { total: 0, paid: 0, returned: 0 };
-    invoiceMap[id].returned += Number(ret.totalAmount || 0);
-  });
-
-  return parties.map((party) => {
-    const values = invoiceMap[party._id.toString()] || { total: 0, paid: 0, returned: 0 };
-    const outstanding =
-      (party.openingBalance || 0) + values.total - values.paid - values.returned;
-    return {
-      partyId: party._id,
-      partyName: party.name,
-      role,
-      total: values.total,
-      paid: values.paid,
-      returned: values.returned,
-      outstanding,
-      totalPurchase: role === "supplier" ? values.total : 0,
-      totalPaid: role === "supplier" ? values.paid : 0,
-      totalSales: role !== "supplier" ? values.total : 0,
-      totalReceived: role !== "supplier" ? values.paid : 0,
-    };
-  });
-};
+const buildOutstandingForRole = async ({ companyId, role, range }) =>
+  getRoleOutstandingRows({ companyId, role, range });
 
 exports.getOutstandingByRole = async (req, res) => {
   try {
@@ -79,8 +22,8 @@ exports.getOutstandingByRole = async (req, res) => {
       return res.status(400).json({ message: "role must be supplier or customer" });
     }
 
-    const rangeFilter = buildRangeFilter(req);
-    const data = await buildOutstandingForRole({ companyId, role, rangeFilter });
+    const range = getDateRangeFromQuery(req.query);
+    const data = await buildOutstandingForRole({ companyId, role, range });
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -105,17 +48,17 @@ exports.getCustomerOutstanding = async (req, res) => {
 exports.getAllOutstanding = async (req, res) => {
   try {
     const companyId = req.user.companyId;
-    const rangeFilter = buildRangeFilter(req);
+    const range = getDateRangeFromQuery(req.query);
 
     const supplier = await buildOutstandingForRole({
       companyId,
       role: "supplier",
-      rangeFilter,
+      range,
     });
     const customer = await buildOutstandingForRole({
       companyId,
       role: "customer",
-      rangeFilter,
+      range,
     });
 
     const map = {};
@@ -154,35 +97,29 @@ exports.getAgeingByRole = async (req, res) => {
       return res.status(400).json({ message: "role must be supplier or customer" });
     }
 
-    const rangeFilter = buildRangeFilter(req);
-    const invoices =
-      role === "supplier"
-        ? await PurchaseInvoice.find({ companyId, ...rangeFilter }).populate("partyId", "name")
-        : await SalesInvoice.find({ companyId, ...rangeFilter }).populate("partyId", "name");
-
-    const now = Date.now();
-    const rows = {};
-
-    invoices.forEach((inv) => {
-      const pid = String(inv.partyId?._id || inv.partyId);
-      if (!pid) return;
-      const name = inv.partyId?.name || "Unknown";
-      if (!rows[pid]) {
-        rows[pid] = { id: pid, name, "0_30": 0, "31_60": 0, "61_plus": 0, total: 0 };
-      }
-
-      const outstanding = (inv.totalAmount || 0) - (inv.paidAmount || 0);
-      if (outstanding <= 0) return;
-      const ageDays = Math.floor((now - new Date(inv.invoiceDate).getTime()) / 86400000);
-
-      if (ageDays <= 30) rows[pid]["0_30"] += outstanding;
-      else if (ageDays <= 60) rows[pid]["31_60"] += outstanding;
-      else rows[pid]["61_plus"] += outstanding;
-
-      rows[pid].total += outstanding;
+    const summaries = await getPartyBalanceSummaries({
+      companyId,
+      range: getDateRangeFromQuery(req.query),
     });
 
-    res.json(Object.values(rows));
+    const rows = summaries
+      .filter((summary) => (summary.roles || []).includes(role))
+      .map((summary) => {
+        const outstanding =
+          role === "supplier"
+            ? summary.supplierOutstanding
+            : summary.customerOutstanding;
+        return {
+          id: String(summary.partyId),
+          name: summary.partyName,
+          "0_30": outstanding,
+          "31_60": 0,
+          "61_plus": 0,
+          total: outstanding,
+        };
+      });
+
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

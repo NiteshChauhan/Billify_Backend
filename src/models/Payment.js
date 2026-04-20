@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const softDeletePlugin = require("./plugins/softDeletePlugin");
 
 const paymentSchema = new mongoose.Schema(
   {
@@ -65,5 +66,7 @@ const paymentSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+paymentSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model("Payment", paymentSchema);

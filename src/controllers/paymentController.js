@@ -93,6 +93,95 @@ const updateInvoiceAmounts = async (invoice) => {
   await invoice.save();
 };
 
+const reversePaymentImpact = async ({ payment, companyId }) => {
+  const party = payment.partyId
+    ? await Party.findOne({ _id: payment.partyId, companyId })
+    : null;
+
+  if (String(payment.adjustType || "").toLowerCase() === "opening" || payment.invoiceType === "OPENING") {
+    if (party) {
+      const openingBalance = Number(party.openingBalance || 0);
+      const currentRemaining = Number(party.remainingOpeningBalance ?? openingBalance);
+      party.remainingOpeningBalance = Math.min(
+        openingBalance,
+        currentRemaining + Number(payment.amount || 0),
+      );
+      party.balance = Number(party.balance || 0) + Number(payment.amount || 0);
+      await party.save();
+    }
+    return;
+  }
+
+  const InvoiceModel =
+    payment.invoiceType === "SALE" ? SalesInvoice : payment.invoiceType === "PURCHASE" ? PurchaseInvoice : null;
+  if (!InvoiceModel) return;
+
+  const invoice = await InvoiceModel.findOne({
+    _id: payment.invoiceId,
+    companyId,
+  });
+
+  if (invoice) {
+    invoice.paidAmount = Math.max(0, Number(invoice.paidAmount || 0) - Number(payment.amount || 0));
+    await updateInvoiceAmounts(invoice);
+  }
+
+  if (party) {
+    party.balance = Number(party.balance || 0) + Number(payment.amount || 0);
+    await party.save();
+  }
+};
+
+const restorePaymentImpact = async ({ payment, companyId }) => {
+  const party = payment.partyId
+    ? await Party.findOne({ _id: payment.partyId, companyId })
+    : null;
+
+  if (String(payment.adjustType || "").toLowerCase() === "opening" || payment.invoiceType === "OPENING") {
+    if (party) {
+      const remainingOpening = await getRemainingOpeningBalance({ party, companyId });
+      if (Number(payment.amount || 0) > remainingOpening) {
+        throw new Error("Cannot restore payment because opening balance is already settled");
+      }
+      party.remainingOpeningBalance = Math.max(0, remainingOpening - Number(payment.amount || 0));
+      party.balance = Math.max(0, Number(party.balance || 0) - Number(payment.amount || 0));
+      await party.save();
+    }
+    return;
+  }
+
+  const InvoiceModel =
+    payment.invoiceType === "SALE" ? SalesInvoice : payment.invoiceType === "PURCHASE" ? PurchaseInvoice : null;
+  if (!InvoiceModel) return;
+
+  const invoice = await InvoiceModel.findOne({
+    _id: payment.invoiceId,
+    companyId,
+  });
+
+  if (!invoice) {
+    throw new Error("Linked invoice not found for restore");
+  }
+
+  const pendingAmount = await getPendingAmount({
+    invoice,
+    invoiceType: payment.invoiceType,
+    companyId,
+  });
+
+  if (Number(payment.amount || 0) > pendingAmount) {
+    throw new Error("Cannot restore payment because invoice is already settled");
+  }
+
+  invoice.paidAmount = Number(invoice.paidAmount || 0) + Number(payment.amount || 0);
+  await updateInvoiceAmounts(invoice);
+
+  if (party) {
+    party.balance = Math.max(0, Number(party.balance || 0) - Number(payment.amount || 0));
+    await party.save();
+  }
+};
+
 const getBankAccountId = async ({ paymentMode, bodyBankAccountId, companyId }) => {
   if (String(paymentMode || "").toUpperCase() !== "BANK") {
     return null;
@@ -473,31 +562,91 @@ exports.createPayment = async (req, res) => {
 
 /* ================= GET PAYMENTS BY INVOICE ================= */
 exports.getPaymentsByInvoice = async (req, res) => {
+  const status = String(req.query.status || "active").toLowerCase();
   const query = {
     companyId: req.user.companyId,
     invoiceId: req.params.invoiceId,
+    ...(status === "deleted" ? { isDeleted: true } : {}),
   };
-  const dateRange = getDateRangeFromQuery(req.query);
-  if (dateRange) {
-    query.paymentDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
-  }
-
-  const payments = await Payment.find(query).sort({ createdAt: 1 });
-
-  res.json(payments);
-};
-
-/* ================= GET PAYMENTS LIST ================= */
-exports.getPayments = async (req, res) => {
-  const query = { companyId: req.user.companyId };
+  const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
     query.paymentDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
   }
 
   const payments = await Payment.find(query)
+    .setOptions({ withDeleted })
+    .sort({ createdAt: 1 });
+
+  res.json(payments);
+};
+
+/* ================= GET PAYMENTS LIST ================= */
+exports.getPayments = async (req, res) => {
+  const status = String(req.query.status || "active").toLowerCase();
+  const query = {
+    companyId: req.user.companyId,
+    ...(status === "deleted" ? { isDeleted: true } : {}),
+  };
+  const withDeleted = status === "deleted" || status === "all";
+  const dateRange = getDateRangeFromQuery(req.query);
+  if (dateRange) {
+    query.paymentDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
+  }
+
+  const payments = await Payment.find(query)
+    .setOptions({ withDeleted })
     .populate("partyId", "name")
     .sort({ paymentDate: -1, createdAt: -1 });
 
   res.json(payments);
+};
+
+exports.deletePayment = async (req, res) => {
+  try {
+    const payment = await Payment.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+    });
+
+    if (!payment) {
+      return res.status(404).json({ error: "Payment not found" });
+    }
+
+    await reversePaymentImpact({ payment, companyId: req.user.companyId });
+
+    payment.isDeleted = true;
+    payment.deletedAt = new Date();
+    payment.deletedBy = req.user._id || null;
+    await payment.save();
+
+    res.json({ message: "Payment deleted successfully" });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+};
+
+exports.restorePayment = async (req, res) => {
+  try {
+    const payment = await Payment.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    }).setOptions({ withDeleted: true });
+
+    if (!payment) {
+      return res.status(404).json({ error: "Deleted payment not found" });
+    }
+
+    await restorePaymentImpact({ payment, companyId: req.user.companyId });
+
+    payment.isDeleted = false;
+    payment.deletedAt = null;
+    payment.deletedBy = null;
+    await payment.save();
+
+    res.json({ message: "Payment restored successfully" });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 };

@@ -1,11 +1,13 @@
-const PDFDocument = require("pdfkit");
+const { normalizePdfLanguage } = require("../utils/pdfLanguage");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
 const Party = require("../models/Party");
 const ReturnEntry = require("../models/Return");
 const Expense = require("../models/Expense");
+const Company = require("../models/Company");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { generateLedgerPdf } = require("../services/ledgerPdfService");
 
 const isSameDay = (dateValue) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -83,11 +85,13 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
   purchases.forEach((p) => {
     purchaseMap[String(p._id)] = p.invoiceNo || "-";
     purchasePayTypeMap[String(p._id)] = (p.paymentType || "credit").toString().toLowerCase();
+    purchasePayTypeMap[`bank:${String(p._id)}`] = p.bankAccountId ? String(p.bankAccountId) : "";
   });
 
   sales.forEach((s) => {
     salesMap[String(s._id)] = s.invoiceNo || "-";
     salesPayTypeMap[String(s._id)] = (s.paymentType || "credit").toString().toLowerCase();
+    salesPayTypeMap[`bank:${String(s._id)}`] = s.bankAccountId ? String(s.bankAccountId) : "";
   });
 
   purchases.forEach((p) => {
@@ -158,13 +162,19 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
       r.billType === "PURCHASE"
         ? purchasePayTypeMap[String(r.billId)] || "credit"
         : salesPayTypeMap[String(r.billId)] || "credit";
+    const mappedBankAccountId =
+      mappedPaymentType === "bank"
+        ? r.billType === "PURCHASE"
+          ? purchasePayTypeMap[`bank:${String(r.billId)}`] || null
+          : salesPayTypeMap[`bank:${String(r.billId)}`] || null
+        : null;
     ledger.push({
       date: r.returnDate,
       type: r.returnType,
       particulars: `${isSaleReturn ? "Sale Return" : "Purchase Return"} ${returnBillNo}`,
       bill_no: returnBillNo,
       paymentType: mappedPaymentType,
-      bankAccountId: null,
+      bankAccountId: mappedBankAccountId,
       partyId,
       debit: isSaleReturn ? 0 : r.totalAmount, // purchase return
       credit: isSaleReturn ? r.totalAmount : 0, // sale return
@@ -331,33 +341,15 @@ exports.exportPartyLedgerPdf = async (req, res) => {
       return { ...entry, balance };
     });
 
-    const doc = new PDFDocument({ margin: 30 });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader(
-      "Content-Disposition",
-      `inline; filename=ledger-${party.name.replace(/\s+/g, "-").toLowerCase()}.pdf`,
-    );
-    doc.pipe(res);
-
-    const titleSuffix =
-      filterType && filterType !== "all" ? ` (${filterType.toUpperCase()})` : "";
-    doc.fontSize(16).text(`Party Ledger${titleSuffix}`, { align: "center" });
-    doc.moveDown(0.5);
-    doc.fontSize(11).text(`Party: ${party.name}`);
-    doc.text(`Opening Balance: ${party.openingBalance || 0} (${party.openingType || "receivable"})`);
-    doc.text(`Closing Balance: ${balance}`);
-    doc.moveDown();
-
-    doc.fontSize(10).text("Date | Particulars | Debit | Credit | Balance");
-    doc.moveDown(0.3);
-    ledger.forEach((row) => {
-      const line = `${new Date(row.date).toLocaleDateString("en-IN")} | ${row.particulars} | ${
-        row.debit || 0
-      } | ${row.credit || 0} | ${row.balance}`;
-      doc.text(line);
+    const company = await Company.findById(companyId).select("pdfLanguage");
+    const language = normalizePdfLanguage(req.query.language || company?.pdfLanguage);
+    await generateLedgerPdf(res, {
+      party,
+      ledger,
+      balance,
+      filterType,
+      language,
     });
-
-    doc.end();
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -104,4 +104,10 @@ app.use("/api/bank-accounts", bankAccountRoutes);
 const settingsRoutes = require("./routes/settingsRoutes");
 app.use("/api/settings", settingsRoutes);
 
+const backupRoutes = require("./routes/backupRoutes");
+app.use("/api/backup", backupRoutes);
+
+const auditLogRoutes = require("./routes/auditLogRoutes");
+app.use("/api/logs", auditLogRoutes);
+
 module.exports = app;

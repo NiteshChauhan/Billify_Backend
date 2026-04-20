@@ -4,7 +4,9 @@ const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
 const ReturnEntry = require("../models/Return");
 const Expense = require("../models/Expense");
+const BankAccount = require("../models/BankAccount");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { getPartyBalanceSummaries } = require("../utils/partyBalanceSummary");
 
 const normalizePaymentType = (v) => {
   const t = String(v || "credit").toLowerCase();
@@ -30,194 +32,247 @@ const buildDateQueries = (req) => {
   };
 };
 
-const filterLedgerEntriesByType = (entries, type) => {
-  const t = String(type || "all").toLowerCase();
-  if (t === "all") return entries;
-  if (t === "party") return entries.filter((e) => !!e.partyId);
-  if (t === "cash" || t === "bank" || t === "credit") {
-    return entries.filter((e) => e.paymentType === t);
-  }
-  if (t === "customer") {
-    return entries.filter((e) => e.partyRole === "customer");
-  }
-  if (t === "supplier") {
-    return entries.filter((e) => e.partyRole === "supplier");
-  }
-  return entries;
-};
-
 // Returns grouped rows for Ledger List page.
 exports.getLedgerList = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const filterType = String(req.query.type || "all").toLowerCase();
+    const bankAccountId = req.query.bankAccountId || "";
     const { invoiceDateQuery, paymentDateQuery, returnDateQuery } = buildDateQueries(req);
+    const range = getDateRangeFromQuery(req.query);
 
-    const parties = await Party.find({ companyId, isActive: true }).select("name roles");
-    const partyById = new Map(parties.map((p) => [String(p._id), p]));
-
-    const [purchases, sales, payments, returns] = await Promise.all([
+    const [partySummaries, parties, purchases, sales, payments, returns, bankAccounts] = await Promise.all([
+      getPartyBalanceSummaries({ companyId, range }),
+      Party.find({ companyId, isActive: true }).select("name roles"),
       PurchaseInvoice.find({ companyId, ...invoiceDateQuery }).select(
-        "partyId totalAmount paidAmount paymentType invoiceNo _id",
+        "partyId totalAmount paidAmount paymentType invoiceNo bankAccountId _id",
       ),
       SalesInvoice.find({ companyId, ...invoiceDateQuery }).select(
-        "partyId totalAmount paidAmount paymentType invoiceNo _id",
+        "partyId totalAmount paidAmount paymentType invoiceNo bankAccountId _id",
       ),
       Payment.find({ companyId, ...paymentDateQuery }).select(
-        "partyId amount paymentType invoiceType invoiceId paymentMode _id",
+        "partyId amount paymentType invoiceType invoiceId paymentMode bankAccountId _id",
       ),
       ReturnEntry.find({ companyId, ...returnDateQuery }).select(
         "partyId returnType totalAmount billType billId returnNo _id",
       ),
+      BankAccount.find({ companyId }).select("accountName"),
     ]);
 
-    // Map billId -> invoice paymentType (used for return classification)
+    const partyById = new Map(parties.map((p) => [String(p._id), p]));
+    const bankAccountNameMap = new Map(
+      bankAccounts.map((account) => [String(account._id), account.accountName || "Bank"]),
+    );
+
     const purchasePayTypeMap = new Map(purchases.map((p) => [String(p._id), normalizePaymentType(p.paymentType)]));
     const salesPayTypeMap = new Map(sales.map((s) => [String(s._id), normalizePaymentType(s.paymentType)]));
+    const purchaseBankAccountMap = new Map(
+      purchases.map((p) => [String(p._id), p.bankAccountId ? String(p.bankAccountId) : ""]),
+    );
+    const salesBankAccountMap = new Map(
+      sales.map((s) => [String(s._id), s.bankAccountId ? String(s.bankAccountId) : ""]),
+    );
 
-    // Aggregate by partyId
-    const partyAgg = new Map();
-    const ensureParty = (partyId) => {
-      const id = String(partyId || "");
-      if (!id) return null;
-      if (!partyAgg.has(id)) {
-        const p = partyById.get(id);
-        partyAgg.set(id, {
-          type: "party",
-          referenceId: id,
-          name: p?.name || "-",
-          roles: p?.roles || [],
-          totalSales: 0,
-          totalPurchase: 0,
-          saleReturns: 0,
-          purchaseReturns: 0,
-          paidReceived: 0,
-          paidPaid: 0,
-          invoiceCount: 0,
-          returnCount: 0,
-          paymentCount: 0,
-        });
-      }
-      return partyAgg.get(id);
-    };
+    const partyRows = partySummaries.map((summary) => {
+      const roles = summary.roles || [];
+      const isCustomerView = filterType === "customer";
+      const isSupplierView = filterType === "supplier";
+      const totalAmount = isCustomerView
+        ? summary.openingReceivable + summary.salesNet
+        : isSupplierView
+        ? summary.openingPayable + summary.purchaseNet
+        : summary.totalInvoiceAmount;
+      const paid = isCustomerView
+        ? summary.paymentReceived
+        : isSupplierView
+        ? summary.paymentPaid
+        : summary.paymentReceived + summary.paymentPaid;
+      const outstanding = isCustomerView
+        ? summary.customerOutstanding
+        : isSupplierView
+        ? summary.supplierOutstanding
+        : summary.customerOutstanding + summary.supplierOutstanding;
+      const totalInvoices = isCustomerView
+        ? summary.salesCount
+        : isSupplierView
+        ? summary.purchaseCount
+        : summary.totalInvoices;
+      const totalTransactions = isCustomerView
+        ? summary.salesCount + summary.saleReturnCount + summary.paymentCount
+        : isSupplierView
+        ? summary.purchaseCount + summary.purchaseReturnCount + summary.paymentCount
+        : summary.totalTransactions;
 
-    sales.forEach((s) => {
-      const row = ensureParty(s.partyId);
-      if (!row) return;
-      row.totalSales += Number(s.totalAmount || 0);
-      row.invoiceCount += 1;
-    });
-    purchases.forEach((p) => {
-      const row = ensureParty(p.partyId);
-      if (!row) return;
-      row.totalPurchase += Number(p.totalAmount || 0);
-      row.invoiceCount += 1;
-    });
-    returns.forEach((r) => {
-      const row = ensureParty(r.partyId);
-      if (!row) return;
-      if (r.returnType === "SALE_RETURN") row.saleReturns += Number(r.totalAmount || 0);
-      if (r.returnType === "PURCHASE_RETURN") row.purchaseReturns += Number(r.totalAmount || 0);
-      row.returnCount += 1;
-    });
-    payments.forEach((p) => {
-      const row = ensureParty(p.partyId);
-      if (!row) return;
-      row.paymentCount += 1;
-      const isReceived = p.paymentType === "RECEIVED" || p.invoiceType === "SALE";
-      if (isReceived) row.paidReceived += Number(p.amount || 0);
-      else row.paidPaid += Number(p.amount || 0);
-    });
-
-    const partyRows = Array.from(partyAgg.values()).map((r) => {
-      const totalSalesNet = r.totalSales - r.saleReturns;
-      const totalPurchaseNet = r.totalPurchase - r.purchaseReturns;
-      const totalAmount = totalSalesNet + totalPurchaseNet;
-      const paid = r.paidReceived + r.paidPaid;
-      const outstanding = totalAmount - paid;
-      const totalInvoices = r.invoiceCount; // Sale + Purchase only
-      const totalTransactions = r.invoiceCount + r.returnCount + r.paymentCount; // invoices + returns + payments
       return {
-        name: r.name,
+        name: summary.partyName,
         totalAmount,
         outstanding,
+        remainingAmount: summary.remainingAmount,
         paid,
-        totalBills: totalInvoices, // backward compatible
+        totalBills: totalInvoices,
         totalInvoices,
         totalTransactions,
         type: "party",
-        referenceId: r.referenceId,
-        roles: r.roles,
+        referenceId: String(summary.partyId),
+        roles,
       };
     });
 
-    // Aggregate by paymentType across invoices/returns only (this is what makes walk-in cash/bank visible)
-    const channelAgg = new Map(
-      ["cash", "bank", "credit"].map((t) => [
-        t,
-        {
-          type: t,
-          referenceId: t,
-          name: t === "cash" ? "Cash" : t === "bank" ? "Bank" : "Credit",
-          totalAmount: 0,
-          paid: 0,
-          outstanding: 0,
-          totalBills: 0, // backward compatible
-          totalInvoices: 0,
-          totalTransactions: 0,
-          _sales: 0,
-          _purchase: 0,
-          _returns: 0,
-          _payments: 0,
-        },
-      ]),
-    );
+    const createChannelRow = ({ type, accountId = "", name }) => ({
+      type,
+      referenceId: accountId || type,
+      name,
+      bankAccountId: accountId || null,
+      totalAmount: 0,
+      paid: 0,
+      outstanding: 0,
+      remainingAmount: 0,
+      totalBills: 0,
+      totalInvoices: 0,
+      totalTransactions: 0,
+      _sales: 0,
+      _purchase: 0,
+      _salesAmount: 0,
+      _purchaseAmount: 0,
+      _saleReturns: 0,
+      _purchaseReturns: 0,
+      _saleReturnAmount: 0,
+      _purchaseReturnAmount: 0,
+      _paymentsReceived: 0,
+      _paymentsPaid: 0,
+      _expenses: 0,
+      _paymentCount: 0,
+    });
 
-    sales.forEach((s) => {
-      const t = normalizePaymentType(s.paymentType);
-      const row = channelAgg.get(t);
-      row.totalAmount += Number(s.totalAmount || 0);
-      row.paid += Number(s.paidAmount || 0);
+    const channelAgg = new Map();
+    const ensureChannelRow = (type, accountId = "") => {
+      const normalizedType = String(type || "").toLowerCase();
+      if (normalizedType !== "cash" && normalizedType !== "bank") return null;
+      const key =
+        normalizedType === "bank" && (filterType === "bank" || bankAccountId)
+          ? `${normalizedType}:${accountId || "all"}`
+          : normalizedType;
+      if (!channelAgg.has(key)) {
+        const name =
+          normalizedType === "cash"
+            ? "Cash"
+            : accountId
+            ? bankAccountNameMap.get(String(accountId)) || "Bank"
+            : "Bank";
+        channelAgg.set(key, createChannelRow({ type: normalizedType, accountId, name }));
+      }
+      return channelAgg.get(key);
+    };
+
+    sales.forEach((invoice) => {
+      const paymentType = normalizePaymentType(invoice.paymentType);
+      if (paymentType === "credit") return;
+      const accountId =
+        paymentType === "bank" && invoice.bankAccountId ? String(invoice.bankAccountId) : "";
+      const row = ensureChannelRow(paymentType, accountId);
+      if (!row) return;
+      row._salesAmount += Number(invoice.totalAmount || 0);
       row._sales += 1;
     });
-    purchases.forEach((p) => {
-      const t = normalizePaymentType(p.paymentType);
-      const row = channelAgg.get(t);
-      row.totalAmount += Number(p.totalAmount || 0);
-      row.paid += Number(p.paidAmount || 0);
+
+    purchases.forEach((invoice) => {
+      const paymentType = normalizePaymentType(invoice.paymentType);
+      if (paymentType === "credit") return;
+      const accountId =
+        paymentType === "bank" && invoice.bankAccountId ? String(invoice.bankAccountId) : "";
+      const row = ensureChannelRow(paymentType, accountId);
+      if (!row) return;
+      row._purchaseAmount += Number(invoice.totalAmount || 0);
       row._purchase += 1;
     });
-    returns.forEach((r) => {
-      const t =
-        r.billType === "PURCHASE"
-          ? purchasePayTypeMap.get(String(r.billId)) || "credit"
-          : salesPayTypeMap.get(String(r.billId)) || "credit";
-      const row = channelAgg.get(t);
-      row.totalAmount -= Number(r.totalAmount || 0);
-      row._returns += 1;
+
+    returns.forEach((entry) => {
+      const paymentType =
+        entry.billType === "PURCHASE"
+          ? purchasePayTypeMap.get(String(entry.billId)) || "credit"
+          : salesPayTypeMap.get(String(entry.billId)) || "credit";
+      if (paymentType === "credit") return;
+      const accountId =
+        paymentType === "bank"
+          ? entry.billType === "PURCHASE"
+            ? purchaseBankAccountMap.get(String(entry.billId)) || ""
+            : salesBankAccountMap.get(String(entry.billId)) || ""
+          : "";
+      const row = ensureChannelRow(paymentType, accountId);
+      if (!row) return;
+      if (entry.returnType === "SALE_RETURN") {
+        row._saleReturns += 1;
+        row._saleReturnAmount += Number(entry.totalAmount || 0);
+      }
+      if (entry.returnType === "PURCHASE_RETURN") {
+        row._purchaseReturns += 1;
+        row._purchaseReturnAmount += Number(entry.totalAmount || 0);
+      }
     });
 
-    // Count payments by channel (this matches what ledger/type/cash & /bank show)
-    payments.forEach((p) => {
-      const ch = paymentModeToChannel(p.paymentMode);
-      const row = channelAgg.get(ch);
+    payments.forEach((payment) => {
+      const channelType = paymentModeToChannel(payment.paymentMode);
+      const accountId =
+        channelType === "bank" && payment.bankAccountId ? String(payment.bankAccountId) : "";
+      const row = ensureChannelRow(channelType, accountId);
       if (!row) return;
-      row._payments += 1;
+      const isReceived =
+        String(payment.paymentType || "").toUpperCase() === "RECEIVED" ||
+        String(payment.invoiceType || "").toUpperCase() === "SALE";
+      row._paymentCount += 1;
+      if (isReceived) row._paymentsReceived += Number(payment.amount || 0);
+      else row._paymentsPaid += Number(payment.amount || 0);
+    });
+
+    const expenses = await Expense.find({
+      companyId,
+      ...(returnDateQuery.returnDate ? { date: returnDateQuery.returnDate } : {}),
+      paymentType: { $in: ["cash", "bank"] },
+    }).select("amount paymentType bankAccountId");
+
+    expenses.forEach((expense) => {
+      const paymentType = String(expense.paymentType || "cash").toLowerCase();
+      const accountId =
+        paymentType === "bank" && expense.bankAccountId ? String(expense.bankAccountId) : "";
+      const row = ensureChannelRow(paymentType, accountId);
+      if (!row) return;
+      row._expenses += Number(expense.amount || 0);
     });
 
     channelAgg.forEach((row) => {
-      row.outstanding = Number(row.totalAmount || 0) - Number(row.paid || 0);
-      row.totalInvoices = Number(row._sales || 0) + Number(row._purchase || 0);
+      row.totalAmount =
+        row._salesAmount -
+        row._saleReturnAmount +
+        row._purchaseAmount -
+        row._purchaseReturnAmount;
+      row.paid = row._paymentsReceived + row._paymentsPaid;
+      row.totalInvoices = row._sales + row._purchase;
       row.totalBills = row.totalInvoices;
       row.totalTransactions =
-        row.totalInvoices + Number(row._returns || 0) + Number(row._payments || 0);
+        row.totalInvoices +
+        row._saleReturns +
+        row._purchaseReturns +
+        row._paymentCount;
+      row.remainingAmount =
+        row._salesAmount +
+        row._purchaseReturnAmount +
+        row._paymentsPaid +
+        row._expenses -
+        row._purchaseAmount -
+        row._saleReturnAmount -
+        row._paymentsReceived;
+      row.outstanding = Math.abs(row.remainingAmount);
     });
 
     const matchesFilter = (entry) => {
       if (filterType === "all") return true;
       if (filterType === "party") return !!entry.partyId;
-      if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
-        return entry.paymentType === filterType;
+      if (filterType === "cash" || filterType === "bank") {
+        if (entry.paymentType !== filterType) return false;
+        if (filterType === "bank" && bankAccountId) {
+          return String(entry.bankAccountId || "") === String(bankAccountId);
+        }
+        return true;
       }
       if (filterType === "customer" || filterType === "supplier") {
         if (!entry.partyId) return false;
@@ -242,6 +297,7 @@ exports.getLedgerList = async (req, res) => {
       const entry = {
         partyId: s.partyId,
         paymentType: normalizePaymentType(s.paymentType),
+        bankAccountId: s.bankAccountId || null,
         totalBillAmount: Number(s.totalAmount || 0),
         totalPaid: 0,
       };
@@ -252,6 +308,7 @@ exports.getLedgerList = async (req, res) => {
       const entry = {
         partyId: p.partyId,
         paymentType: normalizePaymentType(p.paymentType),
+        bankAccountId: p.bankAccountId || null,
         totalBillAmount: Number(p.totalAmount || 0),
         totalPaid: 0,
       };
@@ -266,6 +323,12 @@ exports.getLedgerList = async (req, res) => {
       const entry = {
         partyId: r.partyId,
         paymentType: mappedPaymentType,
+        bankAccountId:
+          mappedPaymentType === "bank"
+            ? r.billType === "PURCHASE"
+              ? purchaseBankAccountMap.get(String(r.billId)) || null
+              : salesBankAccountMap.get(String(r.billId)) || null
+            : null,
         totalBillAmount: -Number(r.totalAmount || 0),
         totalPaid: 0,
       };
@@ -276,6 +339,7 @@ exports.getLedgerList = async (req, res) => {
       const entry = {
         partyId: p.partyId,
         paymentType: paymentModeToChannel(p.paymentMode),
+        bankAccountId: p.bankAccountId || null,
         totalBillAmount: 0,
         totalPaid: Number(p.amount || 0),
       };
@@ -286,15 +350,20 @@ exports.getLedgerList = async (req, res) => {
 
     // Apply filter rules
     let result = [];
-    if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
-      result = [channelAgg.get(filterType)];
+    if (filterType === "cash" || filterType === "bank") {
+      result = Array.from(channelAgg.values()).filter((row) => {
+        if (row.type !== filterType) return false;
+        if (filterType === "bank" && bankAccountId) {
+          return String(row.bankAccountId || "") === String(bankAccountId);
+        }
+        return true;
+      });
     } else if (filterType === "customer" || filterType === "supplier") {
       const role = filterType;
       result = partyRows.filter((r) => (r.roles || []).includes(role));
     } else if (filterType === "party") {
       result = partyRows;
     } else {
-      // all: include party rows + channels
       result = [...partyRows, ...Array.from(channelAgg.values())];
     }
 
@@ -307,7 +376,7 @@ exports.getLedgerList = async (req, res) => {
   }
 };
 
-// Returns ledger transactions across all parties for cash/bank/credit/all.
+// Returns ledger transactions across all parties for cash/bank/all.
 exports.getLedgerTransactions = async (req, res) => {
   try {
     const companyId = req.user.companyId;
@@ -352,6 +421,12 @@ exports.getLedgerTransactions = async (req, res) => {
     const salesNoMap = new Map(sales.map((s) => [String(s._id), s.invoiceNo || "-"]));
     const purchasePayTypeMap = new Map(purchases.map((p) => [String(p._id), normalizePaymentType(p.paymentType)]));
     const salesPayTypeMap = new Map(sales.map((s) => [String(s._id), normalizePaymentType(s.paymentType)]));
+    const purchaseBankAccountMap = new Map(
+      purchases.map((p) => [String(p._id), p.bankAccountId ? String(p.bankAccountId) : ""]),
+    );
+    const salesBankAccountMap = new Map(
+      sales.map((s) => [String(s._id), s.bankAccountId ? String(s.bankAccountId) : ""]),
+    );
 
     const partyIds = new Set();
     [...purchases, ...sales, ...payments, ...returns].forEach((d) => {
@@ -432,6 +507,12 @@ exports.getLedgerTransactions = async (req, res) => {
         r.billType === "PURCHASE"
           ? purchasePayTypeMap.get(String(r.billId)) || "credit"
           : salesPayTypeMap.get(String(r.billId)) || "credit";
+      const mappedBankAccountId =
+        mappedPaymentType === "bank"
+          ? r.billType === "PURCHASE"
+            ? purchaseBankAccountMap.get(String(r.billId)) || null
+            : salesBankAccountMap.get(String(r.billId)) || null
+          : null;
       ledger.push({
         date: r.returnDate,
         type: r.returnType,
@@ -444,7 +525,7 @@ exports.getLedgerTransactions = async (req, res) => {
         partyId: r.partyId,
         partyName: partyName(r.partyId),
         paymentType: mappedPaymentType,
-        bankAccountId: null,
+        bankAccountId: mappedBankAccountId,
       });
     });
 
@@ -467,7 +548,7 @@ exports.getLedgerTransactions = async (req, res) => {
 
     // Apply type filter
     let filtered = ledger;
-    if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
+    if (filterType === "cash" || filterType === "bank") {
       filtered = ledger.filter((e) => e.paymentType === filterType);
       if (filterType === "bank" && bankAccountId) {
         filtered = filtered.filter((e) => String(e.bankAccountId || "") === String(bankAccountId));

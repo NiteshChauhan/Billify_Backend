@@ -149,11 +149,17 @@ exports.createLoan = async (req, res) => {
 
 exports.getLoans = async (req, res) => {
   try {
-    const query = { companyId: req.user.companyId };
+    const status = String(req.query.status || "active").toLowerCase();
+    const withDeleted = status === "deleted" || status === "all";
+    const query = {
+      companyId: req.user.companyId,
+      ...(status === "deleted" ? { isDeleted: true } : {}),
+    };
     if (req.query.date) {
       query.date = { $gte: startOfDay(req.query.date), $lte: endOfDay(req.query.date) };
     }
     const loans = await LoanEntry.find(query)
+      .setOptions({ withDeleted })
       .populate("bankAccountId", "accountName accountNumber")
       .sort({ date: -1, createdAt: -1 });
     res.json(loans);
@@ -167,7 +173,9 @@ exports.updateLoan = async (req, res) => {
     const existingEntry = await LoanEntry.findOne({
       _id: req.params.id,
       companyId: req.user.companyId,
-    }).lean();
+    })
+      .setOptions({ withDeleted: true })
+      .lean();
 
     if (!existingEntry) {
       return res.status(404).json({ message: "Loan entry not found" });
@@ -222,10 +230,68 @@ exports.deleteLoan = async (req, res) => {
 
     computeRemainingState(entries);
 
-    await LoanEntry.deleteOne({ _id: req.params.id, companyId: req.user.companyId });
+    await LoanEntry.updateOne(
+      { _id: req.params.id, companyId: req.user.companyId },
+      {
+        $set: {
+          isDeleted: true,
+          deletedAt: new Date(),
+          deletedBy: req.user._id || null,
+        },
+      },
+    );
     await recomputeAndPersist(req.user.companyId);
     res.json({ message: "Loan entry deleted successfully" });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to delete loan entry" });
+  }
+};
+
+exports.restoreLoan = async (req, res) => {
+  try {
+    const existingEntry = await LoanEntry.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    })
+      .setOptions({ withDeleted: true })
+      .lean();
+
+    if (!existingEntry) {
+      return res.status(404).json({ message: "Deleted loan entry not found" });
+    }
+
+    const entries = await LoanEntry.find({
+      companyId: req.user.companyId,
+    })
+      .sort({ date: 1, createdAt: 1, _id: 1 })
+      .lean();
+
+    computeRemainingState([
+      ...entries,
+      {
+        ...existingEntry,
+        isDeleted: false,
+      },
+    ]);
+
+    await LoanEntry.updateOne(
+      { _id: req.params.id, companyId: req.user.companyId },
+      {
+        $set: {
+          isDeleted: false,
+          deletedAt: null,
+          deletedBy: null,
+        },
+      },
+    );
+
+    await recomputeAndPersist(req.user.companyId);
+    const restored = await LoanEntry.findById(req.params.id)
+      .setOptions({ withDeleted: true })
+      .populate("bankAccountId", "accountName accountNumber");
+    res.json(restored);
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to restore loan entry" });
   }
 };

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const softDeletePlugin = require("./plugins/softDeletePlugin");
 
 const salesInvoiceSchema = new mongoose.Schema(
   {
@@ -70,5 +71,7 @@ const salesInvoiceSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+salesInvoiceSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model("SalesInvoice", salesInvoiceSchema);

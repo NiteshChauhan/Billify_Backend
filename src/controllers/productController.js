@@ -1,12 +1,26 @@
 const Product = require("../models/Product");
 const StockLedger = require("../models/StockLedger");
-const StockBatch = require("../models/StockBatch");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const ReturnEntry = require("../models/Return");
 const Party = require("../models/Party");
 const mongoose = require("mongoose");
 const { getAvailableStock } = require("../utils/stockUtils");
+const {
+  assertOpeningStockEditable,
+  syncOpeningStock,
+} = require("../utils/openingStockUtils");
+
+const buildProductStatusFilter = (status = "active") => {
+  const normalized = String(status || "active").toLowerCase();
+  if (normalized === "deleted") {
+    return { statusFilter: { isDeleted: true }, withDeleted: true };
+  }
+  if (normalized === "all") {
+    return { statusFilter: {}, withDeleted: true };
+  }
+  return { statusFilter: {}, withDeleted: false };
+};
 
 /* ================= CREATE PRODUCT ================= */
 exports.createProduct = async (req, res) => {
@@ -30,31 +44,17 @@ exports.createProduct = async (req, res) => {
       lastSalePrice: Number(req.body.lastSalePrice || price || 0),
     });
 
-    if (Number(openingStock || 0) > 0) {
-      const ledger = await StockLedger.create({
-        companyId: req.user.companyId,
-        productId: product._id,
-        type: "OPENING",
-        quantity: Number(openingStock || 0),
-        rate: Number(openingRate || 0),
-        referenceType: "OPENING_STOCK",
-        referenceId: product._id,
-      });
-
-      await StockBatch.create({
-        companyId: req.user.companyId,
-        productId: product._id,
-        sourceType: "OPENING",
-        sourceId: ledger._id,
-        totalQty: Number(openingStock || 0),
-        remainingQty: Number(openingStock || 0),
-        rate: Number(openingRate || 0),
-      });
-    }
+    await syncOpeningStock({
+      companyId: req.user.companyId,
+      productId: product._id,
+      quantity: openingStock,
+      rate: openingRate,
+      syncProductFields: false,
+    });
 
     res.json(product);
   } catch (err) {
-    res.status(500).json({
+    res.status(err.status || 500).json({
       message: "Failed to create product",
       error: err.message
     });
@@ -70,15 +70,17 @@ exports.getProducts = async (req, res) => {
     const isPaginated = pageParam > 0 || limitParam > 0;
     const page = pageParam > 0 ? pageParam : 1;
     const limit = limitParam > 0 ? Math.min(limitParam, 100) : 20;
-    const filter = { companyId };
+    const { statusFilter, withDeleted } = buildProductStatusFilter(req.query.status);
+    const filter = { companyId, ...statusFilter };
 
     const [products, total] = await Promise.all([
       Product.find(filter)
+        .setOptions({ withDeleted })
         .sort({ createdAt: -1 })
         .skip(isPaginated ? (page - 1) * limit : 0)
         .limit(isPaginated ? limit : 0)
         .lean(),
-      Product.countDocuments(filter),
+      Product.countDocuments(filter).setOptions({ withDeleted }),
     ]);
 
     const productRows = await Promise.all(
@@ -118,7 +120,7 @@ exports.getProductById = async (req, res) => {
     const product = await Product.findOne({
       _id: req.params.id,
       companyId: req.user.companyId
-    });
+    }).setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" });
 
     if (!product) {
       return res.status(404).json({
@@ -154,38 +156,31 @@ exports.updateProduct = async (req, res) => {
       req.body.openingRate ?? existing.openingRate ?? 0,
     );
 
-    const openingEntry = await StockLedger.findOne({
-      companyId,
-      productId,
-      type: "OPENING",
-    });
-
-    const hasTransactions = await StockLedger.exists({
-      companyId,
-      productId,
-      type: { $in: ["PURCHASE", "SALE", "PURCHASE_RETURN", "SALE_RETURN"] },
-    });
-
     const openingChanged =
       Number(existing.openingStock || 0) !== incomingOpeningStock ||
       Number(existing.openingRate || 0) !== incomingOpeningRate;
 
-    if (openingChanged && hasTransactions) {
-      return res.status(400).json({
-        message: "Opening stock/rate cannot be changed after transactions exist",
-      });
+    if (openingChanged) {
+      await assertOpeningStockEditable(
+        companyId,
+        productId,
+        incomingOpeningStock,
+        incomingOpeningRate,
+      );
     }
+
+    const updateData = {
+      ...req.body,
+      price: Number(req.body.price ?? existing.price ?? 0),
+      lastPurchaseRate: Number(req.body.lastPurchaseRate ?? existing.lastPurchaseRate ?? incomingOpeningRate),
+      lastSalePrice: Number(req.body.lastSalePrice ?? existing.lastSalePrice ?? existing.price ?? 0),
+    };
+    delete updateData.openingStock;
+    delete updateData.openingRate;
 
     const product = await Product.findOneAndUpdate(
       { _id: productId, companyId },
-      {
-        ...req.body,
-        price: Number(req.body.price ?? existing.price ?? 0),
-        openingStock: incomingOpeningStock,
-        openingRate: incomingOpeningRate,
-        lastPurchaseRate: Number(req.body.lastPurchaseRate ?? existing.lastPurchaseRate ?? incomingOpeningRate),
-        lastSalePrice: Number(req.body.lastSalePrice ?? existing.lastSalePrice ?? existing.price ?? 0),
-      },
+      updateData,
       { new: true }
     );
 
@@ -195,60 +190,16 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
-    if (!openingEntry && incomingOpeningStock > 0) {
-      const ledger = await StockLedger.create({
-        companyId,
-        productId,
-        type: "OPENING",
-        quantity: incomingOpeningStock,
-        rate: incomingOpeningRate,
-        referenceType: "OPENING_STOCK",
-        referenceId: productId,
-      });
-      await StockBatch.create({
-        companyId,
-        productId,
-        sourceType: "OPENING",
-        sourceId: ledger._id,
-        totalQty: incomingOpeningStock,
-        remainingQty: incomingOpeningStock,
-        rate: incomingOpeningRate,
-      });
-    } else if (openingEntry && openingChanged) {
-      openingEntry.quantity = incomingOpeningStock;
-      openingEntry.rate = incomingOpeningRate;
-      await openingEntry.save();
-
-      if (incomingOpeningStock > 0) {
-        await StockBatch.updateOne(
-          {
-            companyId,
-            productId,
-            sourceType: "OPENING",
-            sourceId: openingEntry._id,
-          },
-          {
-            $set: {
-              totalQty: incomingOpeningStock,
-              remainingQty: incomingOpeningStock,
-              rate: incomingOpeningRate,
-            },
-          },
-          { upsert: true },
-        );
-      } else {
-        await StockBatch.deleteMany({
-          companyId,
-          productId,
-          sourceType: "OPENING",
-          sourceId: openingEntry._id,
-        });
-      }
-    }
-
-    res.json(product);
+    await syncOpeningStock({
+      companyId,
+      productId,
+      quantity: incomingOpeningStock,
+      rate: incomingOpeningRate,
+    });
+    const updatedProduct = await Product.findOne({ _id: productId, companyId });
+    res.json(updatedProduct || product);
   } catch (err) {
-    res.status(500).json({
+    res.status(err.status || 500).json({
       message: "Failed to update product",
       error: err.message
     });
@@ -258,10 +209,31 @@ exports.updateProduct = async (req, res) => {
 /* ================= DELETE PRODUCT ================= */
 exports.deleteProduct = async (req, res) => {
   try {
-    await Product.findOneAndDelete({
+    const product = await Product.findOne({
       _id: req.params.id,
-      companyId: req.user.companyId
+      companyId: req.user.companyId,
     });
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    const hasTransactions = await StockLedger.exists({
+      companyId: req.user.companyId,
+      productId: product._id,
+      type: { $in: ["PURCHASE", "SALE", "PURCHASE_RETURN", "SALE_RETURN"] },
+    });
+
+    if (hasTransactions) {
+      return res.status(400).json({
+        message: "Product with transaction history cannot be deleted",
+      });
+    }
+
+    product.isDeleted = true;
+    product.deletedAt = new Date();
+    product.deletedBy = req.user._id || null;
+    await product.save();
 
     res.json({
       message: "Product deleted successfully"
@@ -269,6 +241,35 @@ exports.deleteProduct = async (req, res) => {
   } catch (err) {
     res.status(500).json({
       message: "Failed to delete product"
+    });
+  }
+};
+
+exports.restoreProduct = async (req, res) => {
+  try {
+    const product = await Product.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    }).setOptions({ withDeleted: true });
+
+    if (!product) {
+      return res.status(404).json({ message: "Deleted product not found" });
+    }
+
+    product.isDeleted = false;
+    product.deletedAt = null;
+    product.deletedBy = null;
+    await product.save();
+
+    res.json({
+      message: "Product restored successfully",
+      product,
+    });
+  } catch (err) {
+    res.status(500).json({
+      message: "Failed to restore product",
+      error: err.message,
     });
   }
 };
@@ -355,6 +356,7 @@ exports.getCapitalSummary = async (req, res) => {
           },
         },
         { $unwind: "$product" },
+        { $match: { "product.isDeleted": false } },
         {
           $addFields: {
             stockNum: { $convert: { input: "$currentStock", to: "double", onError: 0, onNull: 0 } },
@@ -457,27 +459,13 @@ exports.bulkUploadProducts = async (req, res) => {
           lastSalePrice: price,
         });
 
-        if (stock > 0) {
-          const ledger = await StockLedger.create({
-            companyId: req.user.companyId,
-            productId: product._id,
-            type: "OPENING",
-            quantity: stock,
-            rate: price,
-            referenceType: "OPENING_STOCK",
-            referenceId: product._id,
-          });
-
-          await StockBatch.create({
-            companyId: req.user.companyId,
-            productId: product._id,
-            sourceType: "OPENING",
-            sourceId: ledger._id,
-            totalQty: stock,
-            remainingQty: stock,
-            rate: price,
-          });
-        }
+        await syncOpeningStock({
+          companyId: req.user.companyId,
+          productId: product._id,
+          quantity: stock,
+          rate: price,
+          syncProductFields: false,
+        });
 
         insertedCount += 1;
       } catch (error) {

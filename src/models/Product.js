@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const softDeletePlugin = require("./plugins/softDeletePlugin");
 
 const productSchema = new mongoose.Schema({
   companyId: {
@@ -16,5 +17,7 @@ const productSchema = new mongoose.Schema({
   attributes: Object,
   createdAt: { type: Date, default: Date.now }
 });
+
+productSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model("Product", productSchema);

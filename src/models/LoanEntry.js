@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const softDeletePlugin = require("./plugins/softDeletePlugin");
 
 const loanEntrySchema = new mongoose.Schema(
   {
@@ -47,5 +48,7 @@ const loanEntrySchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+loanEntrySchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model("LoanEntry", loanEntrySchema);

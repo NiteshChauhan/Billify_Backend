@@ -8,7 +8,9 @@ router.use(auth);
 router.get("/", returnController.getReturns);
 router.get("/bills", returnController.getReturnBills);
 router.get("/bills/:billId/items", returnController.getReturnBillItems);
+router.post("/:id/restore", returnController.restoreReturn);
 router.post("/sale", returnController.createSaleReturn);
 router.post("/purchase", returnController.createPurchaseReturn);
+router.delete("/:id", returnController.deleteReturn);
 
 module.exports = router;

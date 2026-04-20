@@ -22,7 +22,7 @@ const resolveCurrencyDecimals = (currencySymbol, requestedDecimals) => {
 
 exports.getCompanySettings = async (req, res) => {
   try {
-    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber currencySymbol currencyDecimals");
+    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber currencySymbol currencyDecimals pdfLanguage");
     if (!company) {
       return res.status(404).json({ message: "Company not found" });
     }
@@ -37,7 +37,7 @@ exports.getCompanySettings = async (req, res) => {
 
 exports.saveCompanySettings = async (req, res) => {
   try {
-    const { name, mobile, email, address, gstNumber, currencySymbol, currencyDecimals } = req.body;
+    const { name, mobile, email, address, gstNumber, currencySymbol, currencyDecimals, pdfLanguage } = req.body;
 
     if (!String(name || "").trim()) {
       return res.status(400).json({ message: "name is required" });
@@ -45,6 +45,9 @@ exports.saveCompanySettings = async (req, res) => {
 
     const normalizedCurrencySymbol = String(currencySymbol || "Rs").trim() || "Rs";
     const normalizedCurrencyDecimals = resolveCurrencyDecimals(normalizedCurrencySymbol, currencyDecimals);
+    const normalizedPdfLanguage = ["en", "hi", "ar"].includes(String(pdfLanguage || "").toLowerCase())
+      ? String(pdfLanguage).toLowerCase()
+      : "en";
 
     const company = await Company.findByIdAndUpdate(
       req.user.companyId,
@@ -56,9 +59,10 @@ exports.saveCompanySettings = async (req, res) => {
         gstNumber: String(gstNumber || "").trim(),
         currencySymbol: normalizedCurrencySymbol,
         currencyDecimals: normalizedCurrencyDecimals,
+        pdfLanguage: normalizedPdfLanguage,
       },
       { new: true },
-    ).select("name mobile email address gstNumber currencySymbol currencyDecimals");
+    ).select("name mobile email address gstNumber currencySymbol currencyDecimals pdfLanguage");
 
     if (!company) {
       return res.status(404).json({ message: "Company not found" });

@@ -4,11 +4,13 @@ const Party = require("../models/Party");
 const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
 const Product = require("../models/Product");
+const ReturnEntry = require("../models/Return");
 const { validateStockForSale } = require("../utils/stockValidation");
 const {
   consumeBatches,
   ensureLegacyBatch,
   restoreBatchesFromBreakdown,
+  restoreByAverageCost,
 } = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
@@ -205,7 +207,12 @@ exports.createSalesInvoice = async (req, res) => {
 
 /* ================= GET SALES LIST ================= */
 exports.getSales = async (req, res) => {
-  const query = { companyId: req.user.companyId };
+  const status = String(req.query.status || "active").toLowerCase();
+  const query = {
+    companyId: req.user.companyId,
+    ...(status === "deleted" ? { isDeleted: true } : {}),
+  };
+  const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
     query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
@@ -215,6 +222,7 @@ exports.getSales = async (req, res) => {
   }
 
   const data = await SalesInvoice.find(query)
+    .setOptions({ withDeleted })
     .populate("partyId", "name")
     .sort({ createdAt: -1 });
 
@@ -224,6 +232,7 @@ exports.getSales = async (req, res) => {
 /* ================= GET SALES BY ID ================= */
 exports.getSalesById = async (req, res) => {
   const invoice = await SalesInvoice.findById(req.params.id)
+    .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
     .populate("partyId", "name")
     .populate("items.productId", "name");
 
@@ -450,5 +459,163 @@ exports.updateSalesInvoice = async (req, res) => {
       message: "Failed to update sales invoice",
       error: err.message,
     });
+  }
+};
+
+exports.deleteSalesInvoice = async (req, res) => {
+  try {
+    const invoice = await SalesInvoice.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+
+    const [hasPayments, hasReturns] = await Promise.all([
+      Payment.exists({
+        companyId: req.user.companyId,
+        invoiceType: "SALE",
+        invoiceId: invoice._id,
+      }),
+      ReturnEntry.exists({
+        companyId: req.user.companyId,
+        billType: "SALE",
+        billId: invoice._id,
+      }),
+    ]);
+
+    if (hasPayments) {
+      return res.status(400).json({
+        message: "Delete linked payments first before deleting this sale invoice",
+      });
+    }
+
+    if (hasReturns) {
+      return res.status(400).json({
+        message: "Delete linked sale returns first before deleting this sale invoice",
+      });
+    }
+
+    if (invoice.partyId) {
+      const party = await Party.findById(invoice.partyId);
+      if (party) {
+        party.balance = Number(party.balance || 0) - (Number(invoice.totalAmount || 0) - Number(invoice.paidAmount || 0));
+        await party.save();
+      }
+    }
+
+    if (Array.isArray(invoice.items)) {
+      for (const item of invoice.items) {
+        if (Array.isArray(item.costBreakdown) && item.costBreakdown.length) {
+          await restoreBatchesFromBreakdown(
+            req.user.companyId,
+            item.costBreakdown,
+            item.quantity,
+          );
+        } else {
+          await restoreByAverageCost(
+            req.user.companyId,
+            item.productId,
+            item.quantity,
+            invoice.invoiceDate || new Date(),
+          );
+        }
+      }
+    }
+
+    await StockLedger.deleteMany({
+      companyId: req.user.companyId,
+      referenceId: invoice._id,
+      referenceType: "SALES_INVOICE",
+    });
+
+    invoice.isDeleted = true;
+    invoice.deletedAt = new Date();
+    invoice.deletedBy = req.user._id || null;
+    await invoice.save();
+
+    res.json({ message: "Sales invoice deleted successfully" });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to delete sales invoice" });
+  }
+};
+
+exports.restoreSalesInvoice = async (req, res) => {
+  try {
+    const invoice = await SalesInvoice.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    }).setOptions({ withDeleted: true });
+
+    if (!invoice) {
+      return res.status(404).json({ message: "Deleted invoice not found" });
+    }
+
+    const updatedItems = [];
+    for (const item of invoice.items || []) {
+      await ensureLegacyBatch(req.user.companyId, item.productId, invoice.invoiceDate || new Date());
+    }
+    await validateStockForSale(req.user.companyId, invoice.items || []);
+
+    for (const item of invoice.items || []) {
+      const normalizedItem = {
+        productId: item.productId,
+        quantity: Number(item.quantity || 0),
+        rate: Number(item.rate || 0),
+        amount: Number(item.amount || (Number(item.quantity || 0) * Number(item.rate || 0))),
+      };
+      const { breakdown, actualCost } = await consumeBatches({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        quantity: item.quantity,
+        asOfDate: invoice.invoiceDate || new Date(),
+        sourceHint: "SALE_RESTORE",
+      });
+      normalizedItem.costBreakdown = breakdown;
+      normalizedItem.actualCost = Number(actualCost || 0);
+      normalizedItem.profitAmount = Number((normalizedItem.amount - normalizedItem.actualCost).toFixed(4));
+      updatedItems.push(normalizedItem);
+    }
+
+    for (const item of updatedItems) {
+      await StockLedger.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        type: "SALE",
+        quantity: item.quantity,
+        rate: item.rate,
+        referenceType: "SALES_INVOICE",
+        referenceId: invoice._id,
+      });
+    }
+
+    if (invoice.partyId) {
+      const party = await Party.findById(invoice.partyId);
+      if (party) {
+        party.balance = Number(party.balance || 0) + (Number(invoice.totalAmount || 0) - Number(invoice.paidAmount || 0));
+        await party.save();
+      }
+    }
+
+    invoice.items = updatedItems;
+    invoice.isDeleted = false;
+    invoice.deletedAt = null;
+    invoice.deletedBy = null;
+    await invoice.save();
+
+    res.json(toSalesResponse(invoice));
+  } catch (err) {
+    if (err.code === "INSUFFICIENT_STOCK") {
+      return res.status(400).json({
+        error: "Insufficient stock",
+        productId: err.productId,
+        productName: err.productName,
+        availableStock: err.availableStock,
+      });
+    }
+    res.status(400).json({ message: err.message || "Failed to restore sales invoice" });
   }
 };

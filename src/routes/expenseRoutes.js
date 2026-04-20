@@ -9,5 +9,6 @@ router.get("/", controller.getExpenses);
 router.post("/", controller.createExpense);
 router.put("/:id", controller.updateExpense);
 router.delete("/:id", controller.deleteExpense);
+router.post("/:id/restore", controller.restoreExpense);
 
 module.exports = router;

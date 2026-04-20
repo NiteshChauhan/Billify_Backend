@@ -68,12 +68,18 @@ exports.createExpense = async (req, res) => {
 
 exports.getExpenses = async (req, res) => {
   try {
-    const query = { companyId: req.user.companyId };
+    const status = String(req.query.status || "active").toLowerCase();
+    const query = {
+      companyId: req.user.companyId,
+      ...(status === "deleted" ? { isDeleted: true } : {}),
+    };
+    const withDeleted = status === "deleted" || status === "all";
     if (req.query.date) {
       query.date = { $gte: startOfDay(req.query.date), $lte: endOfDay(req.query.date) };
     }
 
     const expenses = await Expense.find(query)
+      .setOptions({ withDeleted })
       .populate("bankAccountId", "accountName accountNumber")
       .sort({ date: 1, createdAt: 1 });
 
@@ -144,7 +150,7 @@ exports.updateExpense = async (req, res) => {
 
 exports.deleteExpense = async (req, res) => {
   try {
-    const expense = await Expense.findOneAndDelete({
+    const expense = await Expense.findOne({
       _id: req.params.id,
       companyId: req.user.companyId,
     });
@@ -153,8 +159,39 @@ exports.deleteExpense = async (req, res) => {
       return res.status(404).json({ message: "Expense not found" });
     }
 
+    expense.isDeleted = true;
+    expense.deletedAt = new Date();
+    expense.deletedBy = req.user._id || null;
+    await expense.save();
+
     res.json({ message: "Expense deleted successfully" });
   } catch (err) {
     res.status(500).json({ message: "Failed to delete expense", error: err.message });
+  }
+};
+
+exports.restoreExpense = async (req, res) => {
+  try {
+    const expense = await Expense.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    }).setOptions({ withDeleted: true });
+
+    if (!expense) {
+      return res.status(404).json({ message: "Deleted expense not found" });
+    }
+
+    expense.isDeleted = false;
+    expense.deletedAt = null;
+    expense.deletedBy = null;
+    await expense.save();
+
+    const populated = await Expense.findById(expense._id)
+      .setOptions({ withDeleted: true })
+      .populate("bankAccountId", "accountName accountNumber");
+    res.json(populated);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to restore expense", error: err.message });
   }
 };

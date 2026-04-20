@@ -2,6 +2,7 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Company = require("../models/Company");
+const { logAudit } = require("../utils/auditLog");
 
 exports.registerAdmin = async (req, res) => {
   try {
@@ -23,6 +24,16 @@ exports.registerAdmin = async (req, res) => {
       email,
       password: hashedPassword,
       role: "admin"
+    });
+
+    await logAudit({
+      companyId: company._id,
+      userId: user._id,
+      actionType: "REGISTER",
+      module: "auth",
+      entityId: user._id,
+      description: "Admin account registered",
+      details: { email },
     });
 
     res.json({ message: "Admin registered successfully" });
@@ -47,7 +58,26 @@ exports.login = async (req, res) => {
       { expiresIn: "1d" }
     );
 
-    res.json({ token });
+    await logAudit({
+      companyId: user.companyId._id,
+      userId: user._id,
+      actionType: "LOGIN",
+      module: "auth",
+      entityId: user._id,
+      description: "User logged in",
+      details: { email: user.email },
+    });
+
+    res.json({
+      token,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        companyId: user.companyId?._id || user.companyId,
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -78,8 +108,33 @@ exports.changePassword = async (req, res) => {
     user.password = await bcrypt.hash(newPassword, 10);
     await user.save();
 
+    await logAudit({
+      companyId: user.companyId,
+      userId: user._id,
+      actionType: "CHANGE_PASSWORD",
+      module: "auth",
+      entityId: user._id,
+      description: "User changed password",
+    });
+
     res.json({ message: "Password changed successfully" });
   } catch (err) {
     res.status(500).json({ message: "Failed to change password", error: err.message });
+  }
+};
+
+exports.logout = async (req, res) => {
+  try {
+    await logAudit({
+      companyId: req.user.companyId,
+      userId: req.user.userId,
+      actionType: "LOGOUT",
+      module: "auth",
+      entityId: req.user.userId,
+      description: "User logged out",
+    });
+    res.json({ message: "Logged out successfully" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to logout", error: err.message });
   }
 };

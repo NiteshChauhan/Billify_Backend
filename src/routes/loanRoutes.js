@@ -9,5 +9,6 @@ router.get("/", controller.getLoans);
 router.post("/", controller.createLoan);
 router.put("/:id", controller.updateLoan);
 router.delete("/:id", controller.deleteLoan);
+router.post("/:id/restore", controller.restoreLoan);
 
 module.exports = router;

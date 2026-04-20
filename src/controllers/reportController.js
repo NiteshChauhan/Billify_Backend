@@ -219,6 +219,8 @@ const fetchDayBookTransactions = async ({
     bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
     bankAccountName: invoice.bankAccountId?.accountName || "-",
     invoiceNo: invoice.invoiceNo || "-",
+    debit: Number(invoice.totalAmount || 0),
+    credit: 0,
   }));
 
   const purchaseRows = purchases.map((invoice) => ({
@@ -231,6 +233,8 @@ const fetchDayBookTransactions = async ({
     bankAccountId: invoice.bankAccountId?._id || invoice.bankAccountId || null,
     bankAccountName: invoice.bankAccountId?.accountName || "-",
     invoiceNo: invoice.invoiceNo || "-",
+    debit: 0,
+    credit: Number(invoice.totalAmount || 0),
   }));
 
   const paymentRows = payments.map((payment) => ({
@@ -249,6 +253,8 @@ const fetchDayBookTransactions = async ({
     bankAccountName: payment.bankAccountId?.accountName || "-",
     invoiceNo: payment.linkedInvoiceNo || "-",
     adjustType: payment.adjustType || "bill",
+    debit: String(payment.paymentType || "").toLowerCase() === "paid" ? Number(payment.amount || 0) : 0,
+    credit: String(payment.paymentType || "").toLowerCase() === "received" ? Number(payment.amount || 0) : 0,
   }));
 
   const expenseRows = expenses.map((expense) => ({
@@ -261,6 +267,8 @@ const fetchDayBookTransactions = async ({
     bankAccountId: expense.bankAccountId?._id || expense.bankAccountId || null,
     note: expense.note || "",
     bankAccountName: expense.bankAccountId?.accountName || "-",
+    debit: Number(expense.amount || 0),
+    credit: 0,
   }));
 
   const loanRows = loans.map((loan) => ({
@@ -275,6 +283,8 @@ const fetchDayBookTransactions = async ({
     bankAccountId: loan.bankAccountId?._id || loan.bankAccountId || null,
     note: loan.note || "",
     bankAccountName: loan.bankAccountId?.accountName || "-",
+    debit: loan.type === "loan_out" ? Number(loan.amount || 0) : 0,
+    credit: loan.type === "loan_in" ? Number(loan.amount || 0) : 0,
   }));
 
   const returnRows = returns.map((ret) => {
@@ -295,6 +305,8 @@ const fetchDayBookTransactions = async ({
       billId: ret._id,
       referenceId: ret.billId,
       invoiceNo: ret.returnNo || "-",
+      debit: ret.returnType === "PURCHASE_RETURN" ? Number(ret.totalAmount || 0) : 0,
+      credit: ret.returnType === "SALE_RETURN" ? Number(ret.totalAmount || 0) : 0,
     };
   });
 
@@ -432,6 +444,7 @@ exports.stockReport = async (req, res) => {
         },
       },
       { $unwind: "$product" },
+      { $match: { "product.isDeleted": false } },
 
       {
         $project: {

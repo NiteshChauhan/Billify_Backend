@@ -5,6 +5,7 @@ const Party = require("../models/Party");
 const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
 const Product = require("../models/Product");
+const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 
 const toPurchaseResponse = (invoiceDoc) => {
@@ -191,7 +192,11 @@ exports.createPurchaseInvoice = async (req, res) => {
 
 /* ================= GET ALL PURCHASES ================= */
 exports.getPurchases = async (req, res) => {
-  const query = { companyId: req.user.companyId };
+  const status = String(req.query.status || "active").toLowerCase();
+  const query = {
+    companyId: req.user.companyId,
+    ...(status === "deleted" ? { isDeleted: true } : {}),
+  };
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
     query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
@@ -200,7 +205,9 @@ exports.getPurchases = async (req, res) => {
     query.paymentType = String(req.query.paymentType).toLowerCase();
   }
 
+  const withDeleted = status === "deleted" || status === "all";
   const data = await PurchaseInvoice.find(query)
+    .setOptions({ withDeleted })
     .populate("partyId", "name")
     .sort({ createdAt: -1 });
 
@@ -210,6 +217,7 @@ exports.getPurchases = async (req, res) => {
 /* ================= GET PURCHASE BY ID ================= */
 exports.getPurchaseById = async (req, res) => {
   const invoice = await PurchaseInvoice.findById(req.params.id)
+    .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
     .populate("partyId", "name")
     .populate("items.productId", "name");
 
@@ -416,5 +424,144 @@ exports.updatePurchaseInvoice = async (req, res) => {
       message: "Failed to update purchase invoice",
       error: err.message,
     });
+  }
+};
+
+exports.deletePurchaseInvoice = async (req, res) => {
+  try {
+    const invoice = await PurchaseInvoice.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+    });
+
+    if (!invoice) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
+
+    const [hasPayments, hasReturns, batches] = await Promise.all([
+      Payment.exists({
+        companyId: req.user.companyId,
+        invoiceType: "PURCHASE",
+        invoiceId: invoice._id,
+      }),
+      ReturnEntry.exists({
+        companyId: req.user.companyId,
+        billType: "PURCHASE",
+        billId: invoice._id,
+      }),
+      StockBatch.find({
+        companyId: req.user.companyId,
+        sourceType: "PURCHASE",
+        sourceId: invoice._id,
+      }).select("totalQty remainingQty"),
+    ]);
+
+    if (hasPayments) {
+      return res.status(400).json({
+        message: "Delete linked payments first before deleting this purchase invoice",
+      });
+    }
+
+    if (hasReturns) {
+      return res.status(400).json({
+        message: "Delete linked purchase returns first before deleting this purchase invoice",
+      });
+    }
+
+    const hasConsumedStock = batches.some(
+      (batch) => Number(batch.remainingQty || 0) !== Number(batch.totalQty || 0),
+    );
+
+    if (hasConsumedStock) {
+      return res.status(400).json({
+        message: "This purchase invoice cannot be deleted because its stock has already been used",
+      });
+    }
+
+    if (invoice.partyId) {
+      const party = await Party.findById(invoice.partyId);
+      if (party) {
+        party.balance = Number(party.balance || 0) - (Number(invoice.totalAmount || 0) - Number(invoice.paidAmount || 0));
+        await party.save();
+      }
+    }
+
+    await StockLedger.deleteMany({
+      companyId: req.user.companyId,
+      referenceId: invoice._id,
+      referenceType: "PURCHASE_INVOICE",
+    });
+    await StockBatch.deleteMany({
+      companyId: req.user.companyId,
+      sourceType: "PURCHASE",
+      sourceId: invoice._id,
+    });
+
+    invoice.isDeleted = true;
+    invoice.deletedAt = new Date();
+    invoice.deletedBy = req.user._id || null;
+    await invoice.save();
+
+    res.json({ message: "Purchase invoice deleted successfully" });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to delete purchase invoice" });
+  }
+};
+
+exports.restorePurchaseInvoice = async (req, res) => {
+  try {
+    const invoice = await PurchaseInvoice.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    }).setOptions({ withDeleted: true });
+
+    if (!invoice) {
+      return res.status(404).json({ message: "Deleted invoice not found" });
+    }
+
+    for (const item of invoice.items || []) {
+      await StockLedger.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        type: "PURCHASE",
+        quantity: item.quantity,
+        rate: item.rate,
+        referenceType: "PURCHASE_INVOICE",
+        referenceId: invoice._id,
+        createdAt: invoice.invoiceDate || invoice.createdAt || new Date(),
+      });
+      await StockBatch.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        sourceType: "PURCHASE",
+        sourceId: invoice._id,
+        totalQty: Number(item.quantity || 0),
+        remainingQty: Number(item.quantity || 0),
+        rate: Number(item.rate || 0),
+        createdAt: invoice.invoiceDate || invoice.createdAt || new Date(),
+      });
+      await Product.updateOne(
+        { _id: item.productId, companyId: req.user.companyId },
+        { $set: { lastPurchaseRate: Number(item.rate || 0) } },
+      );
+    }
+
+    if (invoice.partyId) {
+      const party = await Party.findById(invoice.partyId);
+      if (party) {
+        party.balance = Number(party.balance || 0) + (Number(invoice.totalAmount || 0) - Number(invoice.paidAmount || 0));
+        await party.save();
+      }
+    }
+
+    invoice.isDeleted = false;
+    invoice.deletedAt = null;
+    invoice.deletedBy = null;
+    await invoice.save();
+
+    res.json(toPurchaseResponse(invoice));
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to restore purchase invoice" });
   }
 };

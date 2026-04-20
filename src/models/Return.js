@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const softDeletePlugin = require("./plugins/softDeletePlugin");
 
 const returnSchema = new mongoose.Schema(
   {
@@ -64,5 +65,7 @@ const returnSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+returnSchema.plugin(softDeletePlugin);
 
 module.exports = mongoose.model("Return", returnSchema);

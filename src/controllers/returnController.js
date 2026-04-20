@@ -25,6 +25,63 @@ const normalizeReturnType = (value = "") => {
 const getBillModelByReturnType = (returnType) =>
   returnType === "PURCHASE_RETURN" ? PurchaseInvoice : SalesInvoice;
 
+const consumeSpecificBatchBreakdown = async (companyId, breakdown = [], quantity) => {
+  let remaining = Number(quantity || 0);
+  if (!(remaining > 0)) return;
+
+  for (const entry of breakdown) {
+    if (remaining <= 0) break;
+    const maxQty = Number(entry.qty || 0);
+    if (!(maxQty > 0) || !entry.batchId) continue;
+
+    const batch = await StockBatch.findOne({
+      _id: entry.batchId,
+      companyId,
+    });
+
+    if (!batch || Number(batch.remainingQty || 0) <= 0) {
+      throw new Error("Returned stock has already been used and cannot be deleted");
+    }
+
+    const consumeQty = Math.min(maxQty, remaining, Number(batch.remainingQty || 0));
+    if (!(consumeQty > 0)) continue;
+
+    batch.remainingQty = Number(batch.remainingQty || 0) - consumeQty;
+    await batch.save();
+    remaining -= consumeQty;
+  }
+
+  if (remaining > 0) {
+    throw new Error("Returned stock has already been used and cannot be deleted");
+  }
+};
+
+const restorePurchaseBatches = async (companyId, purchaseId, productId, quantity) => {
+  let remaining = Number(quantity || 0);
+  if (!(remaining > 0)) return;
+
+  const batches = await StockBatch.find({
+    companyId,
+    productId,
+    sourceType: "PURCHASE",
+    sourceId: purchaseId,
+  }).sort({ createdAt: 1, _id: 1 });
+
+  for (const batch of batches) {
+    if (remaining <= 0) break;
+    const capacity = Math.max(0, Number(batch.totalQty || 0) - Number(batch.remainingQty || 0));
+    if (!(capacity > 0)) continue;
+    const restoreQty = Math.min(capacity, remaining);
+    batch.remainingQty = Number(batch.remainingQty || 0) + restoreQty;
+    await batch.save();
+    remaining -= restoreQty;
+  }
+
+  if (remaining > 0) {
+    throw new Error("Purchase return cannot be deleted because the original purchase stock mapping is no longer available");
+  }
+};
+
 const validateItems = (items = []) => {
   if (!Array.isArray(items) || !items.length) {
     throw new Error("Return items are required");
@@ -366,18 +423,6 @@ exports.createSaleReturn = async (req, res) => {
       }
     }
 
-    for (const item of items) {
-      await StockLedger.create({
-        companyId,
-        productId: item.productId,
-        type: "SALE_RETURN",
-        quantity: item.quantity,
-        rate: item.rate,
-        referenceType: "SALE_RETURN",
-        referenceId: invoice._id,
-      });
-    }
-
     const totalAmount = items.reduce((sum, item) => sum + item.amount, 0);
     const saleReturnCount = await ReturnEntry.countDocuments({
       companyId,
@@ -398,6 +443,19 @@ exports.createSaleReturn = async (req, res) => {
       totalAmount,
       remarks,
     });
+
+    for (const item of items) {
+      await StockLedger.create({
+        companyId,
+        productId: item.productId,
+        type: "SALE_RETURN",
+        quantity: item.quantity,
+        rate: item.rate,
+        referenceType: "SALE_RETURN",
+        referenceId: returnEntry._id,
+        createdAt: returnDate || new Date(),
+      });
+    }
 
     const party = await Party.findById(invoice.partyId);
     if (party) {
@@ -516,16 +574,6 @@ exports.createPurchaseReturn = async (req, res) => {
           sourceHint: "PURCHASE_RETURN_FALLBACK",
         });
       }
-
-      await StockLedger.create({
-        companyId,
-        productId: item.productId,
-        type: "PURCHASE_RETURN",
-        quantity: item.quantity,
-        rate: item.rate,
-        referenceType: "PURCHASE_RETURN",
-        referenceId: invoice._id,
-      });
     }
 
     const totalAmount = items.reduce((sum, item) => sum + item.amount, 0);
@@ -543,6 +591,19 @@ exports.createPurchaseReturn = async (req, res) => {
       totalAmount,
       remarks,
     });
+
+    for (const item of items) {
+      await StockLedger.create({
+        companyId,
+        productId: item.productId,
+        type: "PURCHASE_RETURN",
+        quantity: item.quantity,
+        rate: item.rate,
+        referenceType: "PURCHASE_RETURN",
+        referenceId: returnEntry._id,
+        createdAt: returnDate || new Date(),
+      });
+    }
 
     const party = await Party.findById(invoice.partyId);
     if (party) {
@@ -684,7 +745,11 @@ exports.getReturnBillItems = async (req, res) => {
 };
 
 exports.getReturns = async (req, res) => {
-  const query = { companyId: req.user.companyId };
+  const status = String(req.query.status || "active").toLowerCase();
+  const query = {
+    companyId: req.user.companyId,
+    ...(status === "deleted" ? { isDeleted: true } : {}),
+  };
   if (req.query.billId) query.billId = req.query.billId;
   if (req.query.billType) query.billType = req.query.billType;
   const range = getDateRangeFromQuery(req.query);
@@ -692,10 +757,247 @@ exports.getReturns = async (req, res) => {
     query.returnDate = { $gte: range.fromDate, $lte: range.toDate };
   }
 
+  const withDeleted = status === "deleted" || status === "all";
   const data = await ReturnEntry.find(query)
+    .setOptions({ withDeleted })
     .populate("partyId", "name")
     .populate("items.productId", "name")
     .sort({ returnDate: -1, createdAt: -1 });
 
   res.json(data);
+};
+
+exports.deleteReturn = async (req, res) => {
+  try {
+    const entry = await ReturnEntry.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+    });
+
+    if (!entry) {
+      return res.status(404).json({ message: "Return entry not found" });
+    }
+
+    if (entry.replacementBillId) {
+      return res.status(400).json({
+        message: "Delete linked replacement bill first before deleting this return",
+      });
+    }
+
+    if (entry.returnType === "SALE_RETURN") {
+      const invoice = await SalesInvoice.findOne({
+        _id: entry.billId,
+        companyId: req.user.companyId,
+      }).setOptions({ withDeleted: true });
+
+      if (!invoice) {
+        return res.status(400).json({ message: "Original sale invoice not found" });
+      }
+
+      for (const item of entry.items || []) {
+        const saleItem = (invoice.items || []).find(
+          (row) => String(row.productId) === String(item.productId),
+        );
+        if (saleItem?.costBreakdown?.length) {
+          await consumeSpecificBatchBreakdown(
+            req.user.companyId,
+            saleItem.costBreakdown,
+            item.quantity,
+          );
+        } else {
+          const availableStock = await getAvailableStock(req.user.companyId, item.productId);
+          if (availableStock < Number(item.quantity || 0)) {
+            return res.status(400).json({
+              message: "Return stock has already been used and cannot be deleted",
+            });
+          }
+          await consumeBatches({
+            companyId: req.user.companyId,
+            productId: item.productId,
+            quantity: item.quantity,
+            asOfDate: entry.returnDate || new Date(),
+            sourceHint: "SALE_RETURN_DELETE",
+          });
+        }
+      }
+    } else {
+      for (const item of entry.items || []) {
+        await restorePurchaseBatches(
+          req.user.companyId,
+          entry.billId,
+          item.productId,
+          item.quantity,
+        );
+      }
+    }
+
+    const directLedgerCount = await StockLedger.countDocuments({
+      companyId: req.user.companyId,
+      referenceType: entry.returnType,
+      referenceId: entry._id,
+      type: entry.returnType,
+    });
+
+    if (!directLedgerCount) {
+      const siblingReturns = await ReturnEntry.countDocuments({
+        companyId: req.user.companyId,
+        billId: entry.billId,
+        returnType: entry.returnType,
+        _id: { $ne: entry._id },
+      });
+      if (siblingReturns > 0) {
+        return res.status(400).json({
+          message: "This legacy return cannot be deleted safely because it shares stock history with other returns",
+        });
+      }
+    }
+
+    await StockLedger.deleteMany({
+      companyId: req.user.companyId,
+      referenceType: entry.returnType,
+      referenceId: directLedgerCount ? entry._id : entry.billId,
+      type: entry.returnType,
+    });
+
+    if (entry.partyId) {
+      const party = await Party.findById(entry.partyId);
+      if (party) {
+        party.balance = Number(party.balance || 0) + Number(entry.totalAmount || 0);
+        await party.save();
+      }
+    }
+
+    entry.isDeleted = true;
+    entry.deletedAt = new Date();
+    entry.deletedBy = req.user._id || null;
+    await entry.save();
+
+    res.json({ message: "Return entry deleted successfully" });
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to delete return entry" });
+  }
+};
+
+exports.restoreReturn = async (req, res) => {
+  try {
+    const entry = await ReturnEntry.findOne({
+      _id: req.params.id,
+      companyId: req.user.companyId,
+      isDeleted: true,
+    }).setOptions({ withDeleted: true });
+
+    if (!entry) {
+      return res.status(404).json({ message: "Deleted return entry not found" });
+    }
+
+    if (entry.replacementBillId) {
+      return res.status(400).json({
+        message: "Restore the return through the linked replacement flow is not supported yet",
+      });
+    }
+
+    if (entry.returnType === "SALE_RETURN") {
+      const invoice = await SalesInvoice.findOne({
+        _id: entry.billId,
+        companyId: req.user.companyId,
+      }).setOptions({ withDeleted: true });
+
+      if (!invoice) {
+        return res.status(400).json({ message: "Original sale invoice not found" });
+      }
+
+      const activeReturns = await ReturnEntry.find({
+        companyId: req.user.companyId,
+        billType: "SALE",
+        billId: entry.billId,
+        isDeleted: { $ne: true },
+      }).select("items.productId items.quantity");
+
+      const returnedMap = {};
+      activeReturns.forEach((returnEntry) => {
+        (returnEntry.items || []).forEach((item) => {
+          const key = String(item.productId);
+          returnedMap[key] = (returnedMap[key] || 0) + Number(item.quantity || 0);
+        });
+      });
+
+      for (const item of entry.items || []) {
+        const soldItem = (invoice.items || []).find(
+          (invItem) => String(invItem.productId) === String(item.productId),
+        );
+        if (!soldItem) {
+          throw new Error("Item not found in selected bill");
+        }
+
+        const alreadyReturned = returnedMap[String(item.productId)] || 0;
+        const maxAllowed = Number(soldItem.quantity || 0) - alreadyReturned;
+        if (Number(item.quantity || 0) > maxAllowed) {
+          throw new Error("Return qty exceeds sold qty after restore");
+        }
+
+        if (soldItem.costBreakdown?.length) {
+          await restoreBatchesFromBreakdown(
+            req.user.companyId,
+            soldItem.costBreakdown,
+            item.quantity,
+          );
+        } else {
+          await restoreByAverageCost(
+            req.user.companyId,
+            item.productId,
+            item.quantity,
+            entry.returnDate || new Date(),
+          );
+        }
+      }
+    } else {
+      for (const item of entry.items || []) {
+        const availableStock = await getAvailableStock(req.user.companyId, item.productId);
+        if (availableStock < Number(item.quantity || 0)) {
+          throw new Error("Insufficient stock to restore this purchase return");
+        }
+        try {
+          await consumePurchaseBatches(req.user.companyId, item.productId, entry.billId, item.quantity);
+        } catch (err) {
+          await consumeBatches({
+            companyId: req.user.companyId,
+            productId: item.productId,
+            quantity: item.quantity,
+            asOfDate: entry.returnDate || new Date(),
+            sourceHint: "PURCHASE_RETURN_RESTORE",
+          });
+        }
+      }
+    }
+
+    for (const item of entry.items || []) {
+      await StockLedger.create({
+        companyId: req.user.companyId,
+        productId: item.productId,
+        type: entry.returnType,
+        quantity: item.quantity,
+        rate: item.rate,
+        referenceType: entry.returnType,
+        referenceId: entry._id,
+        createdAt: entry.returnDate || entry.createdAt || new Date(),
+      });
+    }
+
+    if (entry.partyId) {
+      const party = await Party.findById(entry.partyId);
+      if (party) {
+        party.balance = Math.max(0, Number(party.balance || 0) - Number(entry.totalAmount || 0));
+        await party.save();
+      }
+    }
+
+    entry.isDeleted = false;
+    entry.deletedAt = null;
+    entry.deletedBy = null;
+    await entry.save();
+
+    res.json(entry);
+  } catch (err) {
+    res.status(400).json({ message: err.message || "Failed to restore return entry" });
+  }
 };

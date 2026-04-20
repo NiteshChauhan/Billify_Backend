@@ -90,6 +90,8 @@ app.use("/api/expenses", require("../src/routes/expenseRoutes"));
 app.use("/api/loans", require("../src/routes/loanRoutes"));
 app.use("/api/bank-accounts", require("../src/routes/bankAccountRoutes"));
 app.use("/api/settings", require("../src/routes/settingsRoutes"));
+app.use("/api/backup", require("../src/routes/backupRoutes"));
+app.use("/api/logs", require("../src/routes/auditLogRoutes"));
 
 /* ================= 404 ================= */
 app.use((req, res) => {
