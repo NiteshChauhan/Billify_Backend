@@ -87,13 +87,23 @@ const getAvailableStock = async (companyId, productId, asOfDate = new Date()) =>
       });
       return ledgerTotal;
     }
+    if (diff < 0) {
+      return ledgerTotal;
+    }
     return batch.total;
   }
 
   return ledgerTotal;
 };
 
-const consumeBatches = async ({ companyId, productId, quantity, asOfDate = new Date(), sourceHint = "" }) => {
+const consumeBatches = async ({
+  companyId,
+  productId,
+  quantity,
+  asOfDate = new Date(),
+  sourceHint = "",
+  allowNegative = false,
+}) => {
   await ensureLegacyBatch(companyId, productId, asOfDate);
   const batches = await StockBatch.find({
     companyId,
@@ -135,6 +145,13 @@ const consumeBatches = async ({ companyId, productId, quantity, asOfDate = new D
   }
 
   if (remaining > 0) {
+    if (allowNegative) {
+      return {
+        breakdown,
+        actualCost: Number(cost.toFixed(4)),
+        shortageQty: remaining,
+      };
+    }
     const error = new Error("Insufficient stock");
     error.code = "INSUFFICIENT_STOCK";
     error.productId = productId;
@@ -149,6 +166,7 @@ const consumeBatches = async ({ companyId, productId, quantity, asOfDate = new D
   return {
     breakdown,
     actualCost: Number(cost.toFixed(4)),
+    shortageQty: 0,
   };
 };
 

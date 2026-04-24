@@ -23,6 +23,9 @@ const toSalesResponse = (invoiceDoc) => {
   };
 };
 
+const getItemStockMode = (productMap, productId) =>
+  String(productMap?.get(String(productId))?.stockMode || "flexible").toLowerCase();
+
 /* ================= CREATE SALES INVOICE ================= */
 exports.createSalesInvoice = async (req, res) => {
   try {
@@ -85,7 +88,7 @@ exports.createSalesInvoice = async (req, res) => {
     for (const item of items) {
       await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
     }
-    await validateStockForSale(req.user.companyId, items);
+    const saleProducts = await validateStockForSale(req.user.companyId, items);
 
     // 2️⃣ Calculate totals
     let subtotal = 0;
@@ -104,6 +107,7 @@ exports.createSalesInvoice = async (req, res) => {
         quantity: item.quantity,
         asOfDate: invoiceDate || new Date(),
         sourceHint: "SALE",
+        allowNegative: getItemStockMode(saleProducts, item.productId) !== "locked",
       });
       item.costBreakdown = breakdown;
       item.actualCost = Number(actualCost || 0);
@@ -335,7 +339,7 @@ exports.updateSalesInvoice = async (req, res) => {
     for (const item of items) {
       await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
     }
-    await validateStockForSale(req.user.companyId, items);
+    const saleProducts = await validateStockForSale(req.user.companyId, items);
 
     /* ================= RECALCULATE ================= */
     let subtotal = 0;
@@ -366,6 +370,7 @@ exports.updateSalesInvoice = async (req, res) => {
         quantity: item.quantity,
         asOfDate: invoiceDate || new Date(),
         sourceHint: "SALE_EDIT",
+        allowNegative: getItemStockMode(saleProducts, item.productId) !== "locked",
       });
       item.costBreakdown = breakdown;
       item.actualCost = Number(actualCost || 0);
@@ -558,7 +563,7 @@ exports.restoreSalesInvoice = async (req, res) => {
     for (const item of invoice.items || []) {
       await ensureLegacyBatch(req.user.companyId, item.productId, invoice.invoiceDate || new Date());
     }
-    await validateStockForSale(req.user.companyId, invoice.items || []);
+    const saleProducts = await validateStockForSale(req.user.companyId, invoice.items || []);
 
     for (const item of invoice.items || []) {
       const normalizedItem = {
@@ -573,6 +578,7 @@ exports.restoreSalesInvoice = async (req, res) => {
         quantity: item.quantity,
         asOfDate: invoice.invoiceDate || new Date(),
         sourceHint: "SALE_RESTORE",
+        allowNegative: getItemStockMode(saleProducts, item.productId) !== "locked",
       });
       normalizedItem.costBreakdown = breakdown;
       normalizedItem.actualCost = Number(actualCost || 0);
