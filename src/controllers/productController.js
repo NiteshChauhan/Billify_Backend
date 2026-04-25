@@ -11,9 +11,6 @@ const {
   syncOpeningStock,
 } = require("../utils/openingStockUtils");
 
-const normalizeStockMode = (value) =>
-  String(value || "").toLowerCase() === "locked" ? "locked" : "flexible";
-
 const buildProductStatusFilter = (status = "active") => {
   const normalized = String(status || "active").toLowerCase();
   if (normalized === "deleted") {
@@ -41,7 +38,6 @@ exports.createProduct = async (req, res) => {
       companyId: req.user.companyId,
       ...req.body,
       price: Number(price || 0),
-      stockMode: normalizeStockMode(req.body.stockMode),
       openingStock: Number(openingStock || 0),
       openingRate: Number(openingRate || 0),
       lastPurchaseRate: Number(req.body.lastPurchaseRate || openingRate || 0),
@@ -176,7 +172,6 @@ exports.updateProduct = async (req, res) => {
     const updateData = {
       ...req.body,
       price: Number(req.body.price ?? existing.price ?? 0),
-      stockMode: normalizeStockMode(req.body.stockMode ?? existing.stockMode),
       lastPurchaseRate: Number(req.body.lastPurchaseRate ?? existing.lastPurchaseRate ?? incomingOpeningRate),
       lastSalePrice: Number(req.body.lastSalePrice ?? existing.lastSalePrice ?? existing.price ?? 0),
     };
@@ -458,7 +453,6 @@ exports.bulkUploadProducts = async (req, res) => {
           name,
           sku: `CSV-${Date.now()}-${index}`,
           price,
-          stockMode: "flexible",
           openingStock: stock,
           openingRate: price,
           lastPurchaseRate: price,

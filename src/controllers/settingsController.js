@@ -22,7 +22,9 @@ const resolveCurrencyDecimals = (currencySymbol, requestedDecimals) => {
 
 exports.getCompanySettings = async (req, res) => {
   try {
-    const company = await Company.findById(req.user.companyId).select("name mobile email address gstNumber currencySymbol currencyDecimals pdfLanguage");
+    const company = await Company.findById(req.user.companyId).select(
+      "name nameAr mobile whatsapp email address addressAr gstNumber currencySymbol currencyDecimals pdfLanguage stockSettlementEnabled",
+    );
     if (!company) {
       return res.status(404).json({ message: "Company not found" });
     }
@@ -37,7 +39,20 @@ exports.getCompanySettings = async (req, res) => {
 
 exports.saveCompanySettings = async (req, res) => {
   try {
-    const { name, mobile, email, address, gstNumber, currencySymbol, currencyDecimals, pdfLanguage } = req.body;
+    const {
+      name,
+      nameAr,
+      mobile,
+      whatsapp,
+      email,
+      address,
+      addressAr,
+      gstNumber,
+      currencySymbol,
+      currencyDecimals,
+      pdfLanguage,
+      stockSettlementEnabled,
+    } = req.body;
 
     if (!String(name || "").trim()) {
       return res.status(400).json({ message: "name is required" });
@@ -53,16 +68,22 @@ exports.saveCompanySettings = async (req, res) => {
       req.user.companyId,
       {
         name: String(name).trim(),
+        nameAr: String(nameAr || "").trim(),
         mobile: String(mobile || "").trim(),
+        whatsapp: String(whatsapp || "").trim(),
         email: String(email || "").trim(),
         address: String(address || "").trim(),
+        addressAr: String(addressAr || "").trim(),
         gstNumber: String(gstNumber || "").trim(),
         currencySymbol: normalizedCurrencySymbol,
         currencyDecimals: normalizedCurrencyDecimals,
         pdfLanguage: normalizedPdfLanguage,
+        stockSettlementEnabled: Boolean(stockSettlementEnabled),
       },
       { new: true },
-    ).select("name mobile email address gstNumber currencySymbol currencyDecimals pdfLanguage");
+    ).select(
+      "name nameAr mobile whatsapp email address addressAr gstNumber currencySymbol currencyDecimals pdfLanguage stockSettlementEnabled",
+    );
 
     if (!company) {
       return res.status(404).json({ message: "Company not found" });

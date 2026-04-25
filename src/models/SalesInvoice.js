@@ -30,6 +30,11 @@ const salesInvoiceSchema = new mongoose.Schema(
 
     invoiceNo: String,
     invoiceDate: { type: Date, default: Date.now },
+    customerBranch: String,
+    customerAttn: String,
+    customerTel: String,
+    salesman: String,
+    lpoNo: String,
 
     items: [
       {
@@ -37,6 +42,10 @@ const salesInvoiceSchema = new mongoose.Schema(
           type: mongoose.Schema.Types.ObjectId,
           ref: "Product",
         },
+        productName: String,
+        productNameAr: String,
+        productNameHi: String,
+        packing: String,
         quantity: Number,
         rate: Number,
         amount: Number,

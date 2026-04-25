@@ -146,6 +146,9 @@ const consumeBatches = async ({
 
   if (remaining > 0) {
     if (allowNegative) {
+      if (updates.length) {
+        await StockBatch.bulkWrite(updates);
+      }
       return {
         breakdown,
         actualCost: Number(cost.toFixed(4)),

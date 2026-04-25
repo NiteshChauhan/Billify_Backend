@@ -23,8 +23,39 @@ const toSalesResponse = (invoiceDoc) => {
   };
 };
 
-const getItemStockMode = (productMap, productId) =>
-  String(productMap?.get(String(productId))?.stockMode || "flexible").toLowerCase();
+const getProductPacking = (product) => {
+  if (!product?.attributes || typeof product.attributes !== "object") {
+    return "-";
+  }
+  return (
+    product.attributes.packing ||
+    product.attributes.Packing ||
+    product.attributes.unit ||
+    product.attributes.Unit ||
+    product.attributes.size ||
+    product.attributes.Size ||
+    "-"
+  );
+};
+
+const loadSaleProducts = async (companyId, items = []) => {
+  const productIds = [
+    ...new Set((items || []).map((item) => String(item.productId || "")).filter(Boolean)),
+  ];
+  const products = await Product.find({
+    _id: { $in: productIds },
+    companyId,
+  }).select("name nameAr nameHi sku attributes");
+
+  return new Map(products.map((product) => [String(product._id), product]));
+};
+
+const applyInvoiceItemSnapshot = (item, product) => {
+  item.productName = product?.name || item.productName || "-";
+  item.productNameAr = product?.nameAr || item.productNameAr || "";
+  item.productNameHi = product?.nameHi || item.productNameHi || "";
+  item.packing = getProductPacking(product);
+};
 
 /* ================= CREATE SALES INVOICE ================= */
 exports.createSalesInvoice = async (req, res) => {
@@ -39,6 +70,11 @@ exports.createSalesInvoice = async (req, res) => {
       tax = 0,
       paidAmount = 0,
       invoiceDate,
+      customerBranch = "",
+      customerAttn = "",
+      customerTel = "",
+      salesman = "",
+      lpoNo = "",
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
@@ -88,7 +124,8 @@ exports.createSalesInvoice = async (req, res) => {
     for (const item of items) {
       await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
     }
-    const saleProducts = await validateStockForSale(req.user.companyId, items);
+    const saleValidation = await validateStockForSale(req.user.companyId, items);
+    const saleProducts = await loadSaleProducts(req.user.companyId, items);
 
     // 2️⃣ Calculate totals
     let subtotal = 0;
@@ -101,13 +138,14 @@ exports.createSalesInvoice = async (req, res) => {
     });
 
     for (const item of items) {
+      applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
       const { breakdown, actualCost } = await consumeBatches({
         companyId: req.user.companyId,
         productId: item.productId,
         quantity: item.quantity,
         asOfDate: invoiceDate || new Date(),
         sourceHint: "SALE",
-        allowNegative: getItemStockMode(saleProducts, item.productId) !== "locked",
+        allowNegative: !saleValidation.stockSettlementEnabled,
       });
       item.costBreakdown = breakdown;
       item.actualCost = Number(actualCost || 0);
@@ -140,6 +178,11 @@ exports.createSalesInvoice = async (req, res) => {
       bankAccountId,
       invoiceNo,
       invoiceDate,
+      customerBranch: String(customerBranch || "").trim(),
+      customerAttn: String(customerAttn || "").trim(),
+      customerTel: String(customerTel || "").trim(),
+      salesman: String(salesman || "").trim(),
+      lpoNo: String(lpoNo || "").trim(),
       items,
       subtotal,
       tax,
@@ -257,6 +300,11 @@ exports.updateSalesInvoice = async (req, res) => {
       tax = 0,
       paidAmount = 0,
       invoiceDate,
+      customerBranch = "",
+      customerAttn = "",
+      customerTel = "",
+      salesman = "",
+      lpoNo = "",
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
@@ -339,7 +387,8 @@ exports.updateSalesInvoice = async (req, res) => {
     for (const item of items) {
       await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
     }
-    const saleProducts = await validateStockForSale(req.user.companyId, items);
+    const saleValidation = await validateStockForSale(req.user.companyId, items);
+    const saleProducts = await loadSaleProducts(req.user.companyId, items);
 
     /* ================= RECALCULATE ================= */
     let subtotal = 0;
@@ -364,13 +413,14 @@ exports.updateSalesInvoice = async (req, res) => {
     const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
 
     for (const item of items) {
+      applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
       const { breakdown, actualCost } = await consumeBatches({
         companyId: req.user.companyId,
         productId: item.productId,
         quantity: item.quantity,
         asOfDate: invoiceDate || new Date(),
         sourceHint: "SALE_EDIT",
-        allowNegative: getItemStockMode(saleProducts, item.productId) !== "locked",
+        allowNegative: !saleValidation.stockSettlementEnabled,
       });
       item.costBreakdown = breakdown;
       item.actualCost = Number(actualCost || 0);
@@ -393,6 +443,11 @@ exports.updateSalesInvoice = async (req, res) => {
     invoice.partyId = partyId || undefined;
     invoice.paymentType = paymentType;
     invoice.bankAccountId = bankAccountId;
+    invoice.customerBranch = String(customerBranch || "").trim();
+    invoice.customerAttn = String(customerAttn || "").trim();
+    invoice.customerTel = String(customerTel || "").trim();
+    invoice.salesman = String(salesman || "").trim();
+    invoice.lpoNo = String(lpoNo || "").trim();
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = tax;
@@ -563,7 +618,8 @@ exports.restoreSalesInvoice = async (req, res) => {
     for (const item of invoice.items || []) {
       await ensureLegacyBatch(req.user.companyId, item.productId, invoice.invoiceDate || new Date());
     }
-    const saleProducts = await validateStockForSale(req.user.companyId, invoice.items || []);
+    const saleValidation = await validateStockForSale(req.user.companyId, invoice.items || []);
+    const saleProducts = await loadSaleProducts(req.user.companyId, invoice.items || []);
 
     for (const item of invoice.items || []) {
       const normalizedItem = {
@@ -572,13 +628,14 @@ exports.restoreSalesInvoice = async (req, res) => {
         rate: Number(item.rate || 0),
         amount: Number(item.amount || (Number(item.quantity || 0) * Number(item.rate || 0))),
       };
+      applyInvoiceItemSnapshot(normalizedItem, saleProducts.get(String(item.productId)));
       const { breakdown, actualCost } = await consumeBatches({
         companyId: req.user.companyId,
         productId: item.productId,
         quantity: item.quantity,
         asOfDate: invoice.invoiceDate || new Date(),
         sourceHint: "SALE_RESTORE",
-        allowNegative: getItemStockMode(saleProducts, item.productId) !== "locked",
+        allowNegative: !saleValidation.stockSettlementEnabled,
       });
       normalizedItem.costBreakdown = breakdown;
       normalizedItem.actualCost = Number(actualCost || 0);

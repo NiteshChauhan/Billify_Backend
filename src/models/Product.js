@@ -8,13 +8,10 @@ const productSchema = new mongoose.Schema({
     required: true
   },
   name: String,
+  nameAr: String,
+  nameHi: String,
   sku: String,
   price: { type: Number, default: 0 },
-  stockMode: {
-    type: String,
-    enum: ["flexible", "locked"],
-    default: "flexible",
-  },
   openingStock: { type: Number, default: 0 },
   openingRate: { type: Number, default: 0 },
   lastPurchaseRate: { type: Number, default: 0 },
