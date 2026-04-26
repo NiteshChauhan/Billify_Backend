@@ -75,12 +75,12 @@ const getDocumentDirection = (language) => (language === "ar" ? "rtl" : "ltr");
 
 const getDocumentFontStack = (language) => {
   if (language === "ar") {
-    return "'Noto Naskh Arabic Local', 'Noto Sans Local', sans-serif";
+    return "'Noto Naskh Arabic Local', 'Noto Sans Local', 'Noto Sans Devanagari Local', sans-serif";
   }
   if (language === "hi") {
-    return "'Noto Sans Devanagari Local', 'Noto Sans Local', sans-serif";
+    return "'Noto Sans Devanagari Local', 'Noto Sans Local', 'Noto Naskh Arabic Local', sans-serif";
   }
-  return "'Noto Sans Local', sans-serif";
+  return "'Noto Sans Local', 'Noto Naskh Arabic Local', 'Noto Sans Devanagari Local', sans-serif";
 };
 
 const renderSmokeTestMarkup = () => `

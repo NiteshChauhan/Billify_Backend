@@ -1,4 +1,8 @@
-const { getPdfLabels, normalizePdfLanguage } = require("../utils/pdfLanguage");
+const {
+  getInvoiceLabels,
+  normalizePdfLanguage,
+  normalizePdfLanguageMode,
+} = require("../utils/pdfLanguage");
 const {
   escapeHtml,
   formatDate,
@@ -6,33 +10,6 @@ const {
   renderHtmlDocument,
 } = require("./pdfTemplateUtils");
 const { sendPdfResponse } = require("./pdfBrowser");
-
-const getSelectedProductName = (item, language) => {
-  if (language === "ar") {
-    return (
-      item.productNameAr ||
-      item.productId?.nameAr ||
-      item.productName ||
-      item.productId?.name ||
-      "-"
-    );
-  }
-
-  if (language === "hi") {
-    return (
-      item.productNameHi ||
-      item.productId?.nameHi ||
-      item.productName ||
-      item.productId?.name ||
-      "-"
-    );
-  }
-
-  return item.productName || item.productId?.name || "-";
-};
-
-const getSecondaryText = (language, selectedText, alternateText) =>
-  language === "ar" ? alternateText || "" : selectedText || alternateText || "";
 
 const getPageText = (labels) => `${labels.page} 1 ${labels.of} 1`;
 
@@ -111,19 +88,104 @@ const amountInWords = (company, amount) => {
   return `${currency} ${numberToWords(whole)} And ${paddedFractional}/${fractionalBase} Only`;
 };
 
-const renderInvoiceRows = (invoice, company, language, labels) =>
+const getLanguageModeMeta = (languageMode) => {
+  const mode = normalizePdfLanguageMode(languageMode);
+  return {
+    mode,
+    baseLanguage: normalizePdfLanguage(mode),
+    isArabicOnly: mode === "ar",
+    isHindiOnly: mode === "hi",
+    isEnglishArabic: mode === "en_ar",
+    isEnglishHindi: mode === "en_hi",
+    isBilingual: mode === "en_ar" || mode === "en_hi",
+    secondaryLanguage: mode === "en_ar" ? "ar" : mode === "en_hi" ? "hi" : null,
+  };
+};
+
+const getEnglishProductName = (item) =>
+  item.productNameEn ||
+  item.productName ||
+  item.productId?.name ||
+  "-";
+
+const getArabicProductName = (item) =>
+  item.productNameAr ||
+  item.productId?.nameAr ||
+  "";
+
+const getHindiProductName = (item) =>
+  item.productNameHi ||
+  item.productId?.nameHi ||
+  "";
+
+const getProductDisplayName = (item, languageMode) => {
+  const meta = getLanguageModeMeta(languageMode);
+  const englishName = getEnglishProductName(item);
+  const arabicName = getArabicProductName(item) || englishName;
+  const hindiName = getHindiProductName(item) || englishName;
+
+  if (meta.isArabicOnly) {
+    return {
+      primary: arabicName,
+      primaryClass: "lang-ar",
+      secondary: "",
+      secondaryClass: "",
+    };
+  }
+
+  if (meta.isHindiOnly) {
+    return {
+      primary: hindiName,
+      primaryClass: "lang-hi",
+      secondary: "",
+      secondaryClass: "",
+    };
+  }
+
+  if (meta.isEnglishArabic) {
+    return {
+      primary: englishName,
+      primaryClass: "",
+      secondary: arabicName,
+      secondaryClass: "lang-ar",
+    };
+  }
+
+  if (meta.isEnglishHindi) {
+    return {
+      primary: englishName,
+      primaryClass: "",
+      secondary: hindiName,
+      secondaryClass: "lang-hi",
+    };
+  }
+
+  return {
+    primary: englishName,
+    primaryClass: "",
+    secondary: "",
+    secondaryClass: "",
+  };
+};
+
+const renderInvoiceRows = (invoice, company, languageMode, labels) =>
   (invoice.items || [])
     .map((item, index) => {
-      const productName = getSelectedProductName(item, language);
-      const packing = item.packing || item.productId?.attributes?.packing || item.productId?.attributes?.Packing || "-";
+      const name = getProductDisplayName(item, languageMode);
+      const packing =
+        item.packing ||
+        item.productId?.attributes?.packing ||
+        item.productId?.attributes?.Packing ||
+        "-";
+
       return `
         <tr>
           <td class="col-index">${index + 1}</td>
           <td class="col-description">
-            <div class="desc-main">${escapeHtml(productName)}</div>
+            <div class="desc-main ${name.primaryClass}">${escapeHtml(name.primary)}</div>
             ${
-              language !== "ar" && item.productNameAr
-                ? `<div class="desc-sub lang-ar">${escapeHtml(item.productNameAr)}</div>`
+              name.secondary
+                ? `<div class="desc-sub ${name.secondaryClass}">${escapeHtml(name.secondary)}</div>`
                 : ""
             }
           </td>
@@ -137,75 +199,172 @@ const renderInvoiceRows = (invoice, company, language, labels) =>
     .join("") ||
   `<tr><td colspan="6" class="empty-row">${escapeHtml(labels.items)}</td></tr>`;
 
-const bilingualHeaderCell = (primary, secondary = "") => `
-  <div class="th-main">${escapeHtml(primary)}</div>
-  ${secondary ? `<div class="th-sub lang-ar">${escapeHtml(secondary)}</div>` : ""}
+const renderCompanyHeader = (company, meta, labels, titleMarkup) => {
+  const showEnglishBlock = !meta.isArabicOnly;
+  const showArabicBlock = meta.isArabicOnly || meta.isEnglishArabic;
+
+  return `
+    <header class="invoice-header ${showArabicBlock ? "three-col" : "two-col"}">
+      ${
+        showEnglishBlock
+          ? `
+            <div class="company-block company-left">
+              <div class="company-name">${escapeHtml(company?.name || "Company")}</div>
+              <div class="company-address">${escapeHtml(company?.address || "-")}</div>
+            </div>
+          `
+          : ""
+      }
+      <div class="company-block company-center">
+        <div class="contact-pill">${escapeHtml(labels.phone)} ${escapeHtml(company?.mobile || "-")}</div>
+        <div class="whatsapp-line">${escapeHtml(labels.whatsapp)} ${escapeHtml(company?.whatsapp || company?.mobile || "-")}</div>
+        <div class="title-pill">${titleMarkup}</div>
+      </div>
+      ${
+        showArabicBlock
+          ? `
+            <div class="company-block company-right lang-ar">
+              <div class="company-name">${escapeHtml(company?.nameAr || company?.name || "-")}</div>
+              <div class="company-address">${escapeHtml(company?.addressAr || company?.address || "-")}</div>
+            </div>
+          `
+          : ""
+      }
+    </header>
+  `;
+};
+
+const getTermsMarkup = (labels, meta) => {
+  if (meta.isEnglishArabic) {
+    return `
+      <div class="terms-en">${escapeHtml(getInvoiceLabels("en").termsConfirmation)}</div>
+      <div class="terms-ar lang-ar">${escapeHtml(getInvoiceLabels("ar").termsConfirmation)}</div>
+    `;
+  }
+
+  if (meta.isEnglishHindi) {
+    return `
+      <div class="terms-en">${escapeHtml(getInvoiceLabels("en").termsConfirmation)}</div>
+      <div class="terms-hi lang-hi">${escapeHtml(getInvoiceLabels("hi").termsConfirmation)}</div>
+    `;
+  }
+
+  if (meta.isArabicOnly) {
+    return `<div class="terms-ar lang-ar">${escapeHtml(labels.termsConfirmation)}</div>`;
+  }
+
+  if (meta.isHindiOnly) {
+    return `<div class="terms-hi lang-hi">${escapeHtml(labels.termsConfirmation)}</div>`;
+  }
+
+  return `<div class="terms-en">${escapeHtml(labels.termsConfirmation)}</div>`;
+};
+
+const renderStackedLabel = (primary, secondary = "", secondaryClass = "") => `
+  <div class="label-stack">
+    <div class="label-primary">${escapeHtml(primary)}</div>
+    ${secondary ? `<div class="label-secondary ${secondaryClass}">${escapeHtml(secondary)}</div>` : ""}
+  </div>
 `;
 
-const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
-  const normalizedLanguage = normalizePdfLanguage(language);
-  const t = getPdfLabels(normalizedLanguage);
-  const englishLabels = getPdfLabels("en");
-  const arabicLabels = getPdfLabels("ar");
-  const title = type === "SALE" ? t.invoiceTitleSale : t.invoiceTitlePurchase;
-  const titleSecondary = normalizedLanguage === "ar" ? englishLabels.invoiceTitleSale : arabicLabels.invoiceTitleSale;
+const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
+  const meta = getLanguageModeMeta(languageMode);
+  const labels = getInvoiceLabels(meta.mode);
+  const englishLabels = getInvoiceLabels("en");
+  const arabicLabels = getInvoiceLabels("ar");
+  const hindiLabels = getInvoiceLabels("hi");
+  const title = type === "SALE" ? labels.invoiceTitleSale : labels.invoiceTitlePurchase;
   const grossAmount = Number(invoice.totalAmount || 0);
   const discount = 0;
   const netAmount = Number(invoice.totalAmount || 0);
-  const phoneText = company?.mobile || "-";
-  const whatsappText = company?.whatsapp || company?.mobile || "-";
   const customerTel = invoice.customerTel || party?.phone || "-";
   const customerAttn = invoice.customerAttn || party?.name || "-";
   const customerBranch = invoice.customerBranch || "-";
-  const pageText = getPageText(t);
+  const pageText = getPageText(labels);
+  const englishTitle = type === "SALE" ? englishLabels.invoiceTitleSale : englishLabels.invoiceTitlePurchase;
+  const titleSecondary = meta.isEnglishHindi
+    ? (type === "SALE" ? hindiLabels.invoiceTitleSale : hindiLabels.invoiceTitlePurchase)
+    : (type === "SALE" ? arabicLabels.invoiceTitleSale : arabicLabels.invoiceTitlePurchase);
+  const customerPanelSecondary = meta.isEnglishHindi
+    ? hindiLabels.customerDetails
+    : arabicLabels.customerDetails;
+  const invoicePanelSecondary = meta.isEnglishHindi
+    ? hindiLabels.invoiceDetails
+    : arabicLabels.invoiceDetails;
+  const descriptionSecondary = meta.isEnglishHindi
+    ? hindiLabels.description
+    : arabicLabels.description;
+  const packingSecondary = meta.isEnglishHindi
+    ? hindiLabels.packing
+    : arabicLabels.packing;
+  const qtySecondary = meta.isEnglishHindi
+    ? hindiLabels.qty
+    : arabicLabels.qty;
+  const unitPriceSecondary = meta.isEnglishHindi
+    ? hindiLabels.unitPrice
+    : arabicLabels.unitPrice;
+  const amountSecondary = meta.isEnglishHindi
+    ? hindiLabels.amount
+    : arabicLabels.amount;
+  const titleMarkup =
+    meta.isArabicOnly || meta.isHindiOnly
+      ? escapeHtml(title)
+      : `
+          <div class="title-main">${escapeHtml(englishTitle)}</div>
+          <div class="title-sub ${meta.isEnglishHindi ? "lang-hi" : "lang-ar"}">${escapeHtml(titleSecondary)}</div>
+        `;
+  const headerSecondaryClass = meta.isEnglishHindi ? "lang-hi" : "lang-ar";
+  const invoiceDateTime = invoice.invoiceDate
+    ? new Date(invoice.invoiceDate)
+    : new Date();
+  const footerDate = invoiceDateTime.toLocaleDateString("en-GB", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
+  const footerTime = invoiceDateTime.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 
   const body = `
-    <section class="invoice-sheet ${normalizedLanguage === "ar" ? "rtl-doc" : ""}">
-      <header class="invoice-header">
-        <div class="company-block company-left">
-          <div class="company-name">${escapeHtml(company?.name || "Company")}</div>
-          <div class="company-address">${escapeHtml(company?.address || "-")}</div>
-        </div>
-        <div class="company-block company-center">
-          <div class="contact-pill">PHONE ${escapeHtml(phoneText)}</div>
-          <div class="whatsapp-line">WHATSAPP ${escapeHtml(whatsappText)}</div>
-          <div class="title-pill">
-            <div>${escapeHtml(title)}</div>
-            <div class="lang-ar">${escapeHtml(titleSecondary)}</div>
-          </div>
-        </div>
-        <div class="company-block company-right lang-ar">
-          <div class="company-name">${escapeHtml(company?.nameAr || company?.name || "-")}</div>
-          <div class="company-address">${escapeHtml(company?.addressAr || company?.address || "-")}</div>
-        </div>
-      </header>
+    <section class="invoice-sheet ${meta.isArabicOnly ? "rtl-doc" : ""}">
+      ${renderCompanyHeader(company, meta, labels, titleMarkup)}
 
       <section class="top-panels">
         <div class="panel">
           <div class="panel-title">
-            <span>${escapeHtml(t.customerDetails)}</span>
-            <span class="lang-ar">${escapeHtml(getSecondaryText(normalizedLanguage, arabicLabels.customerDetails, englishLabels.customerDetails))}</span>
+            ${
+              meta.isArabicOnly || meta.isHindiOnly
+                ? escapeHtml(labels.customerDetails)
+                : renderStackedLabel(englishLabels.customerDetails, customerPanelSecondary, headerSecondaryClass)
+            }
           </div>
           <div class="detail-grid">
-            <div class="detail-row"><span class="label">${escapeHtml(t.ms)}</span><span class="value strong">${escapeHtml(party?.name || "-")}</span></div>
-            <div class="detail-row"><span class="label">${escapeHtml(t.branch)}</span><span class="value">${escapeHtml(customerBranch)}</span></div>
-            <div class="detail-row"><span class="label">${escapeHtml(t.address)}</span><span class="value">${escapeHtml(party?.address || "-")}</span></div>
-            <div class="detail-row"><span class="label">${escapeHtml(t.attn)}</span><span class="value">${escapeHtml(customerAttn)}</span></div>
-            <div class="detail-row"><span class="label">${escapeHtml(t.tel)}</span><span class="value">${escapeHtml(customerTel)}</span></div>
+            <div class="detail-row"><span class="label">${escapeHtml(labels.ms)}</span><span class="value strong">${escapeHtml(party?.name || "-")}</span></div>
+            <div class="detail-row"><span class="label">${escapeHtml(labels.branch)}</span><span class="value">${escapeHtml(customerBranch)}</span></div>
+            <div class="detail-row"><span class="label">${escapeHtml(labels.address)}</span><span class="value">${escapeHtml(party?.address || "-")}</span></div>
+            <div class="detail-row"><span class="label">${escapeHtml(labels.attn)}</span><span class="value">${escapeHtml(customerAttn)}</span></div>
+            <div class="detail-row"><span class="label">${escapeHtml(labels.tel)}</span><span class="value">${escapeHtml(customerTel)}</span></div>
           </div>
         </div>
 
         <div class="panel">
           <div class="panel-title">
-            <span>${escapeHtml(t.invoiceDetails)}</span>
-            <span class="lang-ar">${escapeHtml(getSecondaryText(normalizedLanguage, arabicLabels.invoiceDetails, englishLabels.invoiceDetails))}</span>
+            ${
+              meta.isArabicOnly || meta.isHindiOnly
+                ? escapeHtml(labels.invoiceDetails)
+                : renderStackedLabel(englishLabels.invoiceDetails, invoicePanelSecondary, headerSecondaryClass)
+            }
           </div>
           <div class="detail-grid">
-            <div class="detail-row split"><span class="label">${escapeHtml(t.invoiceNo)}</span><span class="value strong">${escapeHtml(invoice.invoiceNo || "-")}</span></div>
-            <div class="detail-row split"><span class="label">${escapeHtml(t.invoiceDate)}</span><span class="value">${escapeHtml(formatDate(invoice.invoiceDate))}</span></div>
-            <div class="detail-row split"><span class="label">${escapeHtml(t.salesman)}</span><span class="value">${escapeHtml(invoice.salesman || "-")}</span></div>
-            <div class="detail-row split"><span class="label">${escapeHtml(t.paymentType)}</span><span class="value">${escapeHtml(String(invoice.paymentType || "credit").toUpperCase())}</span></div>
-            <div class="detail-row split"><span class="label">${escapeHtml(t.lpoNo)}</span><span class="value">${escapeHtml(invoice.lpoNo || "-")}</span></div>
+            <div class="detail-row split"><span class="label">${escapeHtml(labels.invoiceNo)}</span><span class="value strong">${escapeHtml(invoice.invoiceNo || "-")}</span></div>
+            <div class="detail-row split"><span class="label">${escapeHtml(labels.invoiceDate)}</span><span class="value">${escapeHtml(formatDate(invoice.invoiceDate))}</span></div>
+            <div class="detail-row split"><span class="label">${escapeHtml(labels.salesman)}</span><span class="value">${escapeHtml(invoice.salesman || "-")}</span></div>
+            <div class="detail-row split"><span class="label">${escapeHtml(labels.paymentType)}</span><span class="value">${escapeHtml(String(invoice.paymentType || "credit").toUpperCase())}</span></div>
+            <div class="detail-row split"><span class="label">${escapeHtml(labels.lpoNo)}</span><span class="value">${escapeHtml(invoice.lpoNo || "-")}</span></div>
           </div>
         </div>
       </section>
@@ -214,16 +373,46 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
         <table class="items-table">
           <thead>
             <tr>
-              <th class="col-index">${bilingualHeaderCell(t.srNo, "#")}</th>
-              <th class="col-description">${bilingualHeaderCell(t.description, t.descriptionArabic)}</th>
-              <th class="col-pack">${bilingualHeaderCell(t.packing, t.packingArabic)}</th>
-              <th class="col-qty">${bilingualHeaderCell(t.qty, t.qtyArabic)}</th>
-              <th class="col-rate">${bilingualHeaderCell(t.unitPrice, t.unitPriceArabic)}</th>
-              <th class="col-amount">${bilingualHeaderCell(t.amount, t.amountArabic)}</th>
+              <th class="col-index">${escapeHtml(labels.srNo)}</th>
+              <th class="col-description">
+                ${
+                  meta.isArabicOnly || meta.isHindiOnly
+                    ? escapeHtml(labels.description)
+                    : renderStackedLabel(englishLabels.description, descriptionSecondary, headerSecondaryClass)
+                }
+              </th>
+              <th class="col-pack">
+                ${
+                  meta.isArabicOnly || meta.isHindiOnly
+                    ? escapeHtml(labels.packing)
+                    : renderStackedLabel(englishLabels.packing, packingSecondary, headerSecondaryClass)
+                }
+              </th>
+              <th class="col-qty">
+                ${
+                  meta.isArabicOnly || meta.isHindiOnly
+                    ? escapeHtml(labels.qty)
+                    : renderStackedLabel(englishLabels.qty, qtySecondary, headerSecondaryClass)
+                }
+              </th>
+              <th class="col-rate">
+                ${
+                  meta.isArabicOnly || meta.isHindiOnly
+                    ? escapeHtml(labels.unitPrice)
+                    : renderStackedLabel(englishLabels.unitPrice, unitPriceSecondary, headerSecondaryClass)
+                }
+              </th>
+              <th class="col-amount">
+                ${
+                  meta.isArabicOnly || meta.isHindiOnly
+                    ? escapeHtml(labels.amount)
+                    : renderStackedLabel(englishLabels.amount, amountSecondary, headerSecondaryClass)
+                }
+              </th>
             </tr>
           </thead>
           <tbody>
-            ${renderInvoiceRows(invoice, company, normalizedLanguage, t)}
+            ${renderInvoiceRows(invoice, company, meta.mode, labels)}
             <tr class="filler-row"><td colspan="6"></td></tr>
           </tbody>
         </table>
@@ -231,44 +420,49 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
 
       <section class="bottom-grid">
         <div class="words-box">
-          <div class="box-label">${escapeHtml(t.amountInWords)} :</div>
+          <div class="box-label">${escapeHtml(labels.amountInWords)} :</div>
           <div class="box-value">${escapeHtml(amountInWords(company, netAmount))}</div>
         </div>
         <div class="totals-box">
-          <div class="total-line"><span>${escapeHtml(t.grossAmount)}</span><strong>${escapeHtml(formatMoney(company, grossAmount))}</strong></div>
-          <div class="total-line"><span>${escapeHtml(t.discount)}</span><strong>${escapeHtml(formatMoney(company, discount))}</strong></div>
-          <div class="total-line total-emphasis"><span>${escapeHtml(t.netAmount)}</span><strong>${escapeHtml(formatMoney(company, netAmount))}</strong></div>
+          <div class="total-line"><span>${escapeHtml(labels.grossAmount)}</span><strong>${escapeHtml(formatMoney(company, grossAmount))}</strong></div>
+          <div class="total-line"><span>${escapeHtml(labels.discount)}</span><strong>${escapeHtml(formatMoney(company, discount))}</strong></div>
+          <div class="total-line total-emphasis"><span>${escapeHtml(labels.netAmount)}</span><strong>${escapeHtml(formatMoney(company, netAmount))}</strong></div>
         </div>
       </section>
 
       <section class="terms-section">
-        <div class="terms-ar lang-ar">${escapeHtml(t.termsConfirmationArabic)}</div>
-        <div class="terms-en">${escapeHtml(t.termsConfirmation)}</div>
+        ${getTermsMarkup(labels, meta)}
       </section>
 
       <section class="signature-grid">
         <div class="signature-box">
-          <div class="signature-title">${escapeHtml(t.preparedBy)}</div>
+          <div class="signature-title">${escapeHtml(labels.preparedBy)}</div>
           <div class="signature-value">${escapeHtml(invoice.salesman || "Default")}</div>
         </div>
         <div class="signature-box">
-          <div class="signature-title">${escapeHtml(t.deliveredBy)}</div>
+          <div class="signature-title">${escapeHtml(labels.deliveredBy)}</div>
           <div class="signature-value">Default</div>
         </div>
         <div class="receiver-box">
-          <div class="receiver-row"><span>${escapeHtml(t.receiversName)} :</span><span class="line"></span></div>
-          <div class="receiver-row"><span>${escapeHtml(t.receiversSignature)} :</span><span class="line"></span></div>
-          <div class="receiver-row"><span>${escapeHtml(t.date)} :</span><span class="line"></span></div>
+          <div class="receiver-row"><span>${escapeHtml(labels.receiversName)} :</span><span class="line"></span></div>
+          <div class="receiver-row"><span>${escapeHtml(labels.receiversSignature)} :</span><span class="line"></span></div>
+          <div class="receiver-row"><span>${escapeHtml(labels.date)} :</span><span class="line"></span></div>
         </div>
       </section>
 
-      <footer class="page-footer">${escapeHtml(pageText)}</footer>
+      <footer class="page-footer">
+        <div class="footer-left">
+          <span>${escapeHtml(footerDate)}</span>
+          <span>${escapeHtml(footerTime)}</span>
+        </div>
+        <div class="footer-right">${escapeHtml(pageText)}</div>
+      </footer>
     </section>
   `;
 
   return renderHtmlDocument({
     title,
-    language: normalizedLanguage,
+    language: meta.baseLanguage,
     body,
     extraCss: `
       body {
@@ -281,10 +475,15 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       }
       .invoice-header {
         display: grid;
-        grid-template-columns: 1.1fr 0.9fr 1.1fr;
         gap: 12px;
         align-items: start;
         margin-bottom: 12px;
+      }
+      .invoice-header.three-col {
+        grid-template-columns: 1.1fr 0.9fr 1.1fr;
+      }
+      .invoice-header.two-col {
+        grid-template-columns: 1.2fr 1fr;
       }
       .company-block {
         min-height: 76px;
@@ -318,44 +517,66 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
         display: inline-block;
         border: 1px solid var(--line);
         border-radius: 6px;
-        padding: 6px 18px;
+        padding: 5px 18px 6px;
         font-weight: 700;
-        line-height: 1.25;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        min-width: 210px;
+      }
+      .title-main {
+        font-size: 13px;
+      }
+      .title-sub {
+        margin-top: 2px;
+        font-size: 12px;
       }
       .top-panels {
         display: grid;
         grid-template-columns: 1fr 0.78fr;
         gap: 0;
-        margin-bottom: 10px;
+        margin-bottom: 8px;
       }
       .panel {
         border: 1px solid var(--line);
-        min-height: 152px;
+        min-height: 146px;
       }
       .panel + .panel {
         border-left: none;
       }
       .panel-title {
-        display: flex;
-        justify-content: center;
-        gap: 12px;
-        padding: 4px 10px;
+        display: grid;
+        place-items: center;
+        padding: 3px 10px 4px;
         border-bottom: 1px solid var(--line);
         font-weight: 700;
+        text-align: center;
+      }
+      .label-stack {
+        display: grid;
+        gap: 1px;
+        justify-items: center;
+      }
+      .label-primary {
+        font-size: 11px;
+        line-height: 1.15;
+      }
+      .label-secondary {
+        font-size: 10px;
+        line-height: 1.15;
       }
       .detail-grid {
-        padding: 8px 12px;
+        padding: 8px 12px 10px;
         display: grid;
-        gap: 8px;
+        gap: 7px;
       }
       .detail-row {
         display: grid;
-        grid-template-columns: 84px 1fr;
+        grid-template-columns: 72px 1fr;
         gap: 8px;
         align-items: baseline;
       }
       .detail-row.split {
-        grid-template-columns: 110px 1fr;
+        grid-template-columns: 96px 1fr;
       }
       .label {
         color: #334155;
@@ -370,33 +591,35 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       .items-table th,
       .items-table td {
         border: 1px solid var(--line);
-        padding: 6px 6px;
+        padding: 5px 6px;
         vertical-align: top;
       }
       .items-table th {
         text-align: center;
         font-weight: 700;
-      }
-      .th-main {
-        font-size: 11px;
-      }
-      .th-sub {
-        font-size: 10px;
-        color: #475569;
-        margin-top: 2px;
+        line-height: 1.2;
       }
       .col-index { width: 4%; text-align: center; }
-      .col-description { width: 50%; }
-      .col-pack { width: 10%; text-align: center; }
-      .col-qty { width: 9%; }
+      .col-description { width: 52%; }
+      .col-pack { width: 8%; text-align: center; }
+      .col-qty { width: 8%; }
       .col-rate { width: 13%; }
-      .col-amount { width: 14%; }
+      .col-amount { width: 15%; }
       .num { text-align: right; white-space: nowrap; }
-      .desc-main { font-weight: 600; }
-      .desc-sub { margin-top: 2px; color: #475569; }
+      .desc-main {
+        font-weight: 600;
+        line-height: 1.35;
+        white-space: pre-wrap;
+      }
+      .desc-sub {
+        margin-top: 4px;
+        color: #475569;
+        line-height: 1.35;
+        white-space: pre-wrap;
+      }
       .items-table-wrap { margin-bottom: 10px; }
       .filler-row td {
-        height: 430px;
+        height: 500px;
       }
       .empty-row {
         text-align: center;
@@ -404,28 +627,29 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       }
       .bottom-grid {
         display: grid;
-        grid-template-columns: 1.2fr 0.7fr;
-        gap: 10px;
-        margin-bottom: 10px;
+        grid-template-columns: 1.22fr 0.68fr;
+        gap: 8px;
+        margin-bottom: 8px;
       }
       .words-box,
       .totals-box {
         border: 1px solid var(--line);
       }
       .box-label {
-        padding: 6px 8px;
+        padding: 5px 8px;
         border-bottom: 1px solid var(--line);
         font-weight: 700;
+        line-height: 1.35;
       }
       .box-value {
-        padding: 10px 8px;
-        min-height: 44px;
+        padding: 8px 8px;
+        min-height: 32px;
       }
       .total-line {
         display: flex;
         justify-content: space-between;
         gap: 16px;
-        padding: 8px 10px;
+        padding: 6px 10px;
         border-bottom: 1px solid var(--line);
       }
       .total-line:last-child {
@@ -436,23 +660,26 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       }
       .terms-section {
         text-align: center;
-        margin: 12px 0 18px;
-        line-height: 1.6;
+        margin: 8px 0 14px;
+        line-height: 1.55;
       }
+      .terms-en,
+      .terms-hi,
       .terms-ar {
         margin-bottom: 4px;
       }
       .signature-grid {
         display: grid;
         grid-template-columns: 1fr 1fr 1.4fr;
-        gap: 20px;
+        gap: 18px;
         align-items: start;
       }
       .signature-box {
-        min-height: 90px;
+        min-height: 102px;
       }
       .signature-title {
-        margin-bottom: 28px;
+        margin-bottom: 22px;
+        line-height: 1.35;
       }
       .signature-value {
         min-height: 18px;
@@ -460,14 +687,14 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       .receiver-box {
         border: 1px solid var(--line);
         padding: 10px 12px;
-        min-height: 110px;
+        min-height: 118px;
       }
       .receiver-row {
         display: grid;
-        grid-template-columns: 145px 1fr;
+        grid-template-columns: 150px 1fr;
         gap: 8px;
         align-items: center;
-        margin: 8px 0;
+        margin: 10px 0;
       }
       .line {
         border-bottom: 1px solid var(--line);
@@ -475,15 +702,25 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       }
       .page-footer {
         margin-top: 10px;
-        text-align: right;
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
         font-size: 10px;
         color: #475569;
       }
+      .footer-left {
+        display: flex;
+        gap: 36px;
+        align-items: center;
+      }
+      .footer-right {
+        text-align: right;
+      }
       .rtl-doc .detail-row {
-        grid-template-columns: 1fr 84px;
+        grid-template-columns: 1fr 72px;
       }
       .rtl-doc .detail-row.split {
-        grid-template-columns: 1fr 110px;
+        grid-template-columns: 1fr 96px;
       }
       .rtl-doc .detail-row .label,
       .rtl-doc .detail-row .value,
@@ -492,6 +729,9 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
       .rtl-doc .words-box,
       .rtl-doc .totals-box {
         text-align: right;
+      }
+      .rtl-doc .footer-left {
+        gap: 24px;
       }
       @media print {
         body {
@@ -503,8 +743,8 @@ const buildInvoiceHtml = ({ invoice, company, party, type, language }) => {
 };
 
 const generateInvoicePdf = async (res, invoice, company, party, type, options = {}) => {
-  const language = normalizePdfLanguage(options.language || "en");
-  const html = buildInvoiceHtml({ invoice, company, party, type, language });
+  const languageMode = normalizePdfLanguageMode(options.languageMode || options.language || "en");
+  const html = buildInvoiceHtml({ invoice, company, party, type, languageMode });
   const safeName = String(invoice.invoiceNo || "invoice").replace(/[^\w.-]+/g, "-");
   await sendPdfResponse(res, {
     html,
@@ -515,4 +755,5 @@ const generateInvoicePdf = async (res, invoice, company, party, type, options = 
 module.exports = {
   buildInvoiceHtml,
   generateInvoicePdf,
+  getProductDisplayName,
 };
