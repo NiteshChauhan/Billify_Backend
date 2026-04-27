@@ -33,6 +33,7 @@ exports.listTransfers = async (req, res) => {
     })
       .populate("fromBranchId", "branchName branchCode")
       .populate("toBranchId", "branchName branchCode")
+      .populate("createdBy", "name email role")
       .populate("items.productId", "name sku")
       .sort({ transferDate: -1, createdAt: -1 });
 
@@ -190,6 +191,7 @@ exports.createTransfer = async (req, res) => {
     const populated = await StockTransfer.findById(transfer._id)
       .populate("fromBranchId", "branchName branchCode")
       .populate("toBranchId", "branchName branchCode")
+      .populate("createdBy", "name email role")
       .populate("items.productId", "name sku");
     res.json(populated);
   } catch (err) {
