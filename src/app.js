@@ -3,8 +3,14 @@ const cors = require("cors");
 
 const app = express();
 
-const allowedOrigins = (process.env.CORS_ORIGIN || "http://localhost:5173,http://127.0.0.1:5173")
-  .split(",")
+const allowedOrigins = [
+  process.env.CLIENT_URL || "",
+  process.env.CORS_ORIGIN || "",
+  process.env.ALLOWED_ORIGINS || "",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]
+  .flatMap((value) => String(value || "").split(","))
   .map((origin) => origin.trim())
   .filter(Boolean);
 const normalizeOrigin = (origin = "") => String(origin || "").replace(/\/$/, "").toLowerCase();
@@ -15,12 +21,18 @@ const isLocalDevOrigin = (origin = "") =>
     origin,
   );
 
+const isVercelPreviewOrigin = (origin = "") =>
+  /^https:\/\/[a-z0-9-]+-[-a-z0-9]+\.vercel\.app$/i.test(String(origin || "").replace(/\/$/, ""));
+
 const corsOptions = {
   origin(origin, callback) {
     // Allow non-browser clients (no Origin header)
     if (!origin) return callback(null, true);
     if (isLocalDevOrigin(origin)) return callback(null, true);
     if (normalizedAllowedOrigins.has(normalizeOrigin(origin))) return callback(null, true);
+    if (process.env.ALLOW_VERCEL_PREVIEW === "true" && isVercelPreviewOrigin(origin)) {
+      return callback(null, true);
+    }
     if (process.env.NODE_ENV !== "production") return callback(null, true);
     return callback(new Error(`CORS blocked for origin: ${origin}`));
   },
@@ -30,6 +42,7 @@ const corsOptions = {
     "Content-Type",
     "Authorization",
     "X-Branch-Id",
+    "X-Company-Id",
     "X-Requested-With",
     "Accept",
     "Cache-Control",
