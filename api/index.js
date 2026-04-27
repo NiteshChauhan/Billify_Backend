@@ -5,50 +5,82 @@ const connectDB = require("../src/lib/db");
 const app = express();
 
 /* ================= CORS ================= */
-const allowedOrigins = (
-  process.env.CORS_ORIGIN ||
-  "http://localhost:5173,http://127.0.0.1:5173,https://vue-frontend-indol.vercel.app"
-)
-  .split(",")
+const allowedOrigins = [
+  process.env.FRONTEND_URL || "",
+  process.env.CLIENT_URL || "",
+  process.env.CORS_ORIGIN || "",
+  process.env.ALLOWED_ORIGINS || "",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:3000",
+]
+  .flatMap((value) => String(value || "").split(","))
   .map((origin) => origin.trim())
   .filter(Boolean);
+const normalizeOrigin = (origin = "") => String(origin || "").replace(/\/$/, "").toLowerCase();
+const normalizedAllowedOrigins = new Set(allowedOrigins.map((origin) => normalizeOrigin(origin)));
 
 const isLocalDevOrigin = (origin = "") =>
   /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3})(:\d+)?$/i.test(
     origin,
   );
 
-app.use(
-  cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (isLocalDevOrigin(origin)) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    optionsSuccessStatus: 204,
-  }),
-);
-app.options(
-  /.*/,
-  cors({
-    origin(origin, callback) {
-      if (!origin) return callback(null, true);
-      if (isLocalDevOrigin(origin)) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    optionsSuccessStatus: 204,
-  }),
-);
+const isVercelPreviewOrigin = (origin = "") => {
+  try {
+    return /\.vercel\.app$/i.test(new URL(origin).hostname);
+  } catch (err) {
+    return false;
+  }
+};
+
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin) return callback(null, true);
+    if (isLocalDevOrigin(origin)) return callback(null, true);
+    if (normalizedAllowedOrigins.has(normalizeOrigin(origin))) return callback(null, true);
+    if (process.env.ALLOW_VERCEL_PREVIEW === "true" && isVercelPreviewOrigin(origin)) {
+      return callback(null, true);
+    }
+    if (process.env.NODE_ENV !== "production") return callback(null, true);
+    return callback(new Error(`CORS blocked origin: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Branch-Id",
+    "X-Company-Id",
+    "X-Requested-With",
+    "Accept",
+    "Cache-Control",
+    "Pragma",
+    "Expires",
+  ],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 app.use(express.json());
+
+const shouldDebugRequests =
+  process.env.DEBUG_REQUESTS === "true" || process.env.DEBUG_AUTH_FLOW === "true";
+
+app.use((req, res, next) => {
+  if (shouldDebugRequests) {
+    console.log("[REQ]", {
+      method: req.method,
+      path: req.path,
+      origin: req.headers.origin || "",
+      hasAuthorization: Boolean(req.headers.authorization),
+      branchHeader: req.headers["x-branch-id"] || "",
+      companyHeader: req.headers["x-company-id"] || "",
+    });
+  }
+  next();
+});
 
 /* ================= DB INIT (🔥 REQUIRED) ================= */
 app.use(async (req, res, next) => {
@@ -95,14 +127,18 @@ app.use("/api/logs", require("../src/routes/auditLogRoutes"));
 
 /* ================= 404 ================= */
 app.use((req, res) => {
-  res.status(404).json({ error: "Route not found" });
+  res.status(404).json({
+    success: false,
+    message: "Route not found",
+  });
 });
 
 /* ================= ERROR ================= */
 app.use((err, req, res, next) => {
   console.error("🔥 API Error:", err);
-  res.status(500).json({
-    error: err.message || "Internal Server Error",
+  res.status(err.status || 500).json({
+    success: false,
+    message: err.message || "Internal Server Error",
   });
 });
 

@@ -7,6 +7,9 @@ module.exports = async (req, res, next) => {
     return next();
   }
 
+  const shouldDebugAuth =
+    process.env.DEBUG_REQUESTS === "true" || process.env.DEBUG_AUTH_FLOW === "true";
+
   let token = null;
 
   // 1️⃣ Header token (normal API)
@@ -20,6 +23,15 @@ module.exports = async (req, res, next) => {
   }
 
   if (!token) {
+    if (shouldDebugAuth) {
+      console.warn("[AUTH] Missing token", {
+        method: req.method,
+        path: req.path,
+        origin: req.headers.origin || "",
+        hasAuthorization: Boolean(req.headers.authorization),
+        branchHeader: req.headers["x-branch-id"] || "",
+      });
+    }
     return res.status(401).json({ message: "Unauthorized" });
   }
 
@@ -27,6 +39,12 @@ module.exports = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.userId).select("_id companyId role isActive");
     if (!user || user.isActive === false) {
+      if (shouldDebugAuth) {
+        console.warn("[AUTH] User missing or inactive", {
+          userId: decoded.userId,
+          path: req.path,
+        });
+      }
       return res.status(401).json({ message: "Unauthorized" });
     }
 
@@ -42,6 +60,13 @@ module.exports = async (req, res, next) => {
     );
 
     if (!requestedValid) {
+      if (shouldDebugAuth) {
+        console.warn("[AUTH] Invalid branch access", {
+          userId: decoded.userId,
+          requestedBranchId,
+          path: req.path,
+        });
+      }
       return res.status(403).json({ message: "Unauthorized branch access" });
     }
 
@@ -55,6 +80,12 @@ module.exports = async (req, res, next) => {
     };
     next();
   } catch (err) {
+    if (shouldDebugAuth) {
+      console.warn("[AUTH] Token verification failed", {
+        path: req.path,
+        reason: err.message,
+      });
+    }
     return res.status(401).json({ message: "Invalid token" });
   }
 };
