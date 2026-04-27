@@ -122,7 +122,10 @@ app.use("/api/company-balance", require("../src/routes/companyBalanceRoutes"));
 app.use("/api/expenses", require("../src/routes/expenseRoutes"));
 app.use("/api/loans", require("../src/routes/loanRoutes"));
 app.use("/api/bank-accounts", require("../src/routes/bankAccountRoutes"));
+app.use("/api/stock-transfers", require("../src/routes/stockTransferRoutes"));
+app.use("/api/collection-transfers", require("../src/routes/collectionTransferRoutes"));
 app.use("/api/settings", require("../src/routes/settingsRoutes"));
+app.use("/api/branches", require("../src/routes/branchRoutes"));
 app.use("/api/backup", require("../src/routes/backupRoutes"));
 app.use("/api/logs", require("../src/routes/auditLogRoutes"));
 
