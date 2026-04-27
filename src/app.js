@@ -7,6 +7,7 @@ const allowedOrigins = [
   process.env.CLIENT_URL || "",
   process.env.CORS_ORIGIN || "",
   process.env.ALLOWED_ORIGINS || "",
+  "https://vue-frontend-indol.vercel.app",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
 ]
