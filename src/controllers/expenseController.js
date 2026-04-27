@@ -51,6 +51,7 @@ exports.createExpense = async (req, res) => {
 
     const expense = await Expense.create({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       date: startOfDay(date),
       title: String(title).trim(),
       amount: normalizedAmount,
@@ -71,6 +72,7 @@ exports.getExpenses = async (req, res) => {
     const status = String(req.query.status || "active").toLowerCase();
     const query = {
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       ...(status === "deleted" ? { isDeleted: true } : {}),
     };
     const withDeleted = status === "deleted" || status === "all";
@@ -126,7 +128,7 @@ exports.updateExpense = async (req, res) => {
     }
 
     const expense = await Expense.findOneAndUpdate(
-      { _id: req.params.id, companyId: req.user.companyId },
+      { _id: req.params.id, companyId: req.user.companyId, branchId: req.user.branchId || null },
       {
         date: startOfDay(date),
         title: String(title).trim(),
@@ -153,6 +155,7 @@ exports.deleteExpense = async (req, res) => {
     const expense = await Expense.findOne({
       _id: req.params.id,
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
     });
 
     if (!expense) {
@@ -175,6 +178,7 @@ exports.restoreExpense = async (req, res) => {
     const expense = await Expense.findOne({
       _id: req.params.id,
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       isDeleted: true,
     }).setOptions({ withDeleted: true });
 

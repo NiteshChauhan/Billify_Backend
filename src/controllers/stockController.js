@@ -7,7 +7,7 @@ exports.getProductStock = async (req, res) => {
   try {
     const { productId } = req.params;
 
-    const stock = await getAvailableStock(req.user.companyId, productId);
+    const stock = await getAvailableStock(req.user.companyId, req.user.branchId || null, productId);
 
     res.json({ productId, stock });
   } catch (err) {
@@ -29,6 +29,7 @@ exports.adjustStock = async (req, res) => {
 
     await StockLedger.create({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       productId,
       type: "ADJUSTMENT",
       quantity,

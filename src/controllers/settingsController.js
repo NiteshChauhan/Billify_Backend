@@ -1,4 +1,5 @@
 const Company = require("../models/Company");
+const Branch = require("../models/Branch");
 
 const CURRENCY_DECIMALS = {
   Rs: 2,
@@ -92,5 +93,17 @@ exports.saveCompanySettings = async (req, res) => {
     res.json(company);
   } catch (err) {
     res.status(500).json({ message: "Failed to save company profile", error: err.message });
+  }
+};
+
+exports.getBranchSummary = async (req, res) => {
+  try {
+    const branches = await Branch.find({ companyId: req.user.companyId }).sort({
+      isDefault: -1,
+      branchName: 1,
+    });
+    res.json(branches);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to load branch summary", error: err.message });
   }
 };

@@ -22,17 +22,19 @@ const buildError = (message, status = 400) => {
   return error;
 };
 
-const getPositiveBatches = async (companyId, productId) =>
+const getPositiveBatches = async (companyId, branchId, productId) =>
   StockBatch.find({
     companyId,
+    branchId: branchId || null,
     productId,
     remainingQty: { $gt: 0 },
   }).sort({ createdAt: 1, _id: 1 });
 
-const getOpeningBatch = async (companyId, productId, openingEntryId) => {
+const getOpeningBatch = async (companyId, branchId, productId, openingEntryId) => {
   if (!openingEntryId) return null;
   return StockBatch.findOne({
     companyId,
+    branchId: branchId || null,
     productId,
     sourceType: "OPENING",
     sourceId: openingEntryId,
@@ -41,6 +43,7 @@ const getOpeningBatch = async (companyId, productId, openingEntryId) => {
 
 const reduceOtherBatches = async ({
   companyId,
+  branchId,
   productId,
   quantity,
   excludeBatchId = null,
@@ -48,7 +51,7 @@ const reduceOtherBatches = async ({
   let remaining = Math.max(0, toNumber(quantity, 0));
   if (!(remaining > 0)) return;
 
-  const batches = await getPositiveBatches(companyId, productId);
+  const batches = await getPositiveBatches(companyId, branchId, productId);
   const updates = [];
 
   for (const batch of batches) {
@@ -79,16 +82,18 @@ const reduceOtherBatches = async ({
   }
 };
 
-const getOpeningStockSnapshot = async (companyId, productId) => {
+const getOpeningStockSnapshot = async (companyId, branchId, productId) => {
   const [product, openingEntry, hasTransactions] = await Promise.all([
     Product.findOne({ _id: productId, companyId }),
     StockLedger.findOne({
       companyId,
+      branchId: branchId || null,
       productId,
       type: "OPENING",
     }).sort({ createdAt: 1, _id: 1 }),
     StockLedger.exists({
       companyId,
+      branchId: branchId || null,
       productId,
       type: { $in: OPENING_BLOCKING_TYPES },
     }),
@@ -111,15 +116,15 @@ const assertProductExists = async (companyId, productId) => {
   return product;
 };
 
-const assertOpeningStockEditable = async (companyId, productId, nextQuantity, nextRate) => {
-  const snapshot = await getOpeningStockSnapshot(companyId, productId);
+const assertOpeningStockEditable = async (companyId, branchId, productId, nextQuantity, nextRate) => {
+  const snapshot = await getOpeningStockSnapshot(companyId, branchId, productId);
   const normalizedQuantity = Math.max(0, toNumber(nextQuantity, 0));
 
   if (!snapshot.product) {
     throw buildError("Product not found", 404);
   }
 
-  const positiveBatches = await getPositiveBatches(companyId, productId);
+  const positiveBatches = await getPositiveBatches(companyId, branchId, productId);
   const totalAvailable = positiveBatches.reduce(
     (sum, batch) => sum + toNumber(batch.remainingQty, 0),
     0,
@@ -135,6 +140,7 @@ const assertOpeningStockEditable = async (companyId, productId, nextQuantity, ne
 
 const syncOpeningStock = async ({
   companyId,
+  branchId,
   productId,
   quantity,
   rate,
@@ -149,14 +155,15 @@ const syncOpeningStock = async ({
 
   const openingEntry = await StockLedger.findOne({
     companyId,
+    branchId: branchId || null,
     productId,
     type: "OPENING",
   }).sort({ createdAt: 1, _id: 1 });
-  const openingBatch = await getOpeningBatch(companyId, productId, openingEntry?._id);
+  const openingBatch = await getOpeningBatch(companyId, branchId, productId, openingEntry?._id);
   const oldQuantity = toNumber(openingEntry?.quantity, 0);
   const delta = normalizedQuantity - oldQuantity;
   const totalAvailableBefore = (
-    await getPositiveBatches(companyId, productId)
+    await getPositiveBatches(companyId, branchId, productId)
   ).reduce((sum, batch) => sum + toNumber(batch.remainingQty, 0), 0);
   const targetAvailable = totalAvailableBefore + delta;
 
@@ -170,6 +177,7 @@ const syncOpeningStock = async ({
     if (!openingEntry) {
       activeEntry = await StockLedger.create({
         companyId,
+        branchId: branchId || null,
         productId,
         type: "OPENING",
         quantity: normalizedQuantity,
@@ -196,6 +204,7 @@ const syncOpeningStock = async ({
     } else {
       await StockBatch.create({
         companyId,
+        branchId: branchId || null,
         productId,
         sourceType: "OPENING",
         sourceId: activeEntry._id,
@@ -206,9 +215,10 @@ const syncOpeningStock = async ({
     }
 
     if (desiredOpeningRemaining < 0) {
-      const latestOpeningBatch = await getOpeningBatch(companyId, productId, activeEntry._id);
+      const latestOpeningBatch = await getOpeningBatch(companyId, branchId, productId, activeEntry._id);
       await reduceOtherBatches({
         companyId,
+        branchId,
         productId,
         quantity: Math.abs(desiredOpeningRemaining),
         excludeBatchId: latestOpeningBatch?._id || null,
@@ -217,6 +227,7 @@ const syncOpeningStock = async ({
 
     await StockBatch.deleteMany({
       companyId,
+      branchId: branchId || null,
       productId,
       sourceType: "OPENING",
       sourceId: { $ne: activeEntry._id },
@@ -224,17 +235,20 @@ const syncOpeningStock = async ({
   } else if (openingEntry) {
     await reduceOtherBatches({
       companyId,
+      branchId,
       productId,
       quantity: Math.max(0, oldQuantity - toNumber(openingBatch?.remainingQty, 0)),
       excludeBatchId: openingBatch?._id || null,
     });
     await StockBatch.deleteMany({
       companyId,
+      branchId: branchId || null,
       productId,
       sourceType: "OPENING",
     });
     await StockLedger.deleteMany({
       companyId,
+      branchId: branchId || null,
       productId,
       type: "OPENING",
     });

@@ -8,6 +8,12 @@ const companyBalanceSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+      index: true,
+    },
     date: {
       type: Date,
       required: true,
@@ -22,6 +28,6 @@ const companyBalanceSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-companyBalanceSchema.index({ companyId: 1, date: 1 }, { unique: true });
+companyBalanceSchema.index({ companyId: 1, branchId: 1, date: 1 }, { unique: true });
 
 module.exports = mongoose.model("CompanyBalance", companyBalanceSchema);

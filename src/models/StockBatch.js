@@ -8,6 +8,12 @@ const stockBatchSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+      index: true,
+    },
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",
@@ -16,7 +22,7 @@ const stockBatchSchema = new mongoose.Schema(
     },
     sourceType: {
       type: String,
-      enum: ["OPENING", "PURCHASE", "SALE_RETURN", "LEGACY"],
+      enum: ["OPENING", "PURCHASE", "SALE_RETURN", "TRANSFER_IN", "LEGACY"],
       required: true,
       index: true,
     },

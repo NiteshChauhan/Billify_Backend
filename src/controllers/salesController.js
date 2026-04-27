@@ -60,6 +60,7 @@ const applyInvoiceItemSnapshot = (item, product) => {
 /* ================= CREATE SALES INVOICE ================= */
 exports.createSalesInvoice = async (req, res) => {
   try {
+    const branchId = req.user.branchId || null;
     const {
       partyId: bodyPartyId,
       vendorId,
@@ -122,9 +123,9 @@ exports.createSalesInvoice = async (req, res) => {
 
     // 1️⃣ Validate stock
     for (const item of items) {
-      await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
+      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date());
     }
-    const saleValidation = await validateStockForSale(req.user.companyId, items);
+    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items);
     const saleProducts = await loadSaleProducts(req.user.companyId, items);
 
     // 2️⃣ Calculate totals
@@ -141,6 +142,7 @@ exports.createSalesInvoice = async (req, res) => {
       applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
       const { breakdown, actualCost } = await consumeBatches({
         companyId: req.user.companyId,
+        branchId,
         productId: item.productId,
         quantity: item.quantity,
         asOfDate: invoiceDate || new Date(),
@@ -173,6 +175,7 @@ exports.createSalesInvoice = async (req, res) => {
     // 4️⃣ Create invoice
     const invoice = await SalesInvoice.create({
       companyId: req.user.companyId,
+      branchId,
       partyId: partyId || undefined,
       paymentType,
       bankAccountId,
@@ -225,6 +228,7 @@ exports.createSalesInvoice = async (req, res) => {
     if (finalPaidAmount > 0) {
       await Payment.create({
         companyId: req.user.companyId,
+        branchId,
         partyId: party ? party._id : undefined,
         invoiceType: "SALE",
         invoiceId: invoice._id,
@@ -257,6 +261,7 @@ exports.getSales = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
   const query = {
     companyId: req.user.companyId,
+    branchId: req.user.branchId || null,
     ...(status === "deleted" ? { isDeleted: true } : {}),
   };
   const withDeleted = status === "deleted" || status === "all";
@@ -278,7 +283,11 @@ exports.getSales = async (req, res) => {
 
 /* ================= GET SALES BY ID ================= */
 exports.getSalesById = async (req, res) => {
-  const invoice = await SalesInvoice.findById(req.params.id)
+  const invoice = await SalesInvoice.findOne({
+    _id: req.params.id,
+    companyId: req.user.companyId,
+    branchId: req.user.branchId || null,
+  })
     .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
     .populate("partyId", "name")
     .populate("items.productId", "name");
@@ -289,6 +298,7 @@ exports.getSalesById = async (req, res) => {
 /* ================= UPDATE SALES INVOICE ================= */
 exports.updateSalesInvoice = async (req, res) => {
   try {
+    const branchId = req.user.branchId || null;
     const { id } = req.params;
     const {
       partyId: bodyPartyId,
@@ -308,7 +318,11 @@ exports.updateSalesInvoice = async (req, res) => {
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
-    const invoice = await SalesInvoice.findById(id);
+    const invoice = await SalesInvoice.findOne({
+      _id: id,
+      companyId: req.user.companyId,
+      branchId,
+    });
 
     if (!invoice) {
       return res.status(404).json({ message: "Invoice not found" });
@@ -364,6 +378,7 @@ exports.updateSalesInvoice = async (req, res) => {
         if (Array.isArray(item.costBreakdown) && item.costBreakdown.length) {
           await restoreBatchesFromBreakdown(
             req.user.companyId,
+            branchId,
             item.costBreakdown,
             item.quantity,
           );
@@ -385,9 +400,9 @@ exports.updateSalesInvoice = async (req, res) => {
 
     /* ================= VALIDATE STOCK AGAIN ================= */
     for (const item of items) {
-      await ensureLegacyBatch(req.user.companyId, item.productId, invoiceDate || new Date());
+      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date());
     }
-    const saleValidation = await validateStockForSale(req.user.companyId, items);
+    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items);
     const saleProducts = await loadSaleProducts(req.user.companyId, items);
 
     /* ================= RECALCULATE ================= */
@@ -416,6 +431,7 @@ exports.updateSalesInvoice = async (req, res) => {
       applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
       const { breakdown, actualCost } = await consumeBatches({
         companyId: req.user.companyId,
+        branchId,
         productId: item.productId,
         quantity: item.quantity,
         asOfDate: invoiceDate || new Date(),
@@ -470,6 +486,7 @@ exports.updateSalesInvoice = async (req, res) => {
     for (const item of items) {
       await StockLedger.create({
         companyId: req.user.companyId,
+        branchId,
         productId: item.productId,
         type: "SALE",
         quantity: item.quantity,
@@ -492,6 +509,7 @@ exports.updateSalesInvoice = async (req, res) => {
     if (finalPaidAmount > 0) {
       await Payment.create({
         companyId: req.user.companyId,
+        branchId,
         partyId: newParty ? newParty._id : undefined,
         invoiceType: "SALE",
         invoiceId: invoice._id,
@@ -527,6 +545,7 @@ exports.deleteSalesInvoice = async (req, res) => {
     const invoice = await SalesInvoice.findOne({
       _id: req.params.id,
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
     });
 
     if (!invoice) {
@@ -571,12 +590,14 @@ exports.deleteSalesInvoice = async (req, res) => {
         if (Array.isArray(item.costBreakdown) && item.costBreakdown.length) {
           await restoreBatchesFromBreakdown(
             req.user.companyId,
+            req.user.branchId || null,
             item.costBreakdown,
             item.quantity,
           );
         } else {
           await restoreByAverageCost(
             req.user.companyId,
+            req.user.branchId || null,
             item.productId,
             item.quantity,
             invoice.invoiceDate || new Date(),
@@ -587,6 +608,7 @@ exports.deleteSalesInvoice = async (req, res) => {
 
     await StockLedger.deleteMany({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       referenceId: invoice._id,
       referenceType: "SALES_INVOICE",
     });
@@ -604,9 +626,11 @@ exports.deleteSalesInvoice = async (req, res) => {
 
 exports.restoreSalesInvoice = async (req, res) => {
   try {
+    const branchId = req.user.branchId || null;
     const invoice = await SalesInvoice.findOne({
       _id: req.params.id,
       companyId: req.user.companyId,
+      branchId,
       isDeleted: true,
     }).setOptions({ withDeleted: true });
 
@@ -616,9 +640,9 @@ exports.restoreSalesInvoice = async (req, res) => {
 
     const updatedItems = [];
     for (const item of invoice.items || []) {
-      await ensureLegacyBatch(req.user.companyId, item.productId, invoice.invoiceDate || new Date());
+      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoice.invoiceDate || new Date());
     }
-    const saleValidation = await validateStockForSale(req.user.companyId, invoice.items || []);
+    const saleValidation = await validateStockForSale(req.user.companyId, branchId, invoice.items || []);
     const saleProducts = await loadSaleProducts(req.user.companyId, invoice.items || []);
 
     for (const item of invoice.items || []) {
@@ -631,6 +655,7 @@ exports.restoreSalesInvoice = async (req, res) => {
       applyInvoiceItemSnapshot(normalizedItem, saleProducts.get(String(item.productId)));
       const { breakdown, actualCost } = await consumeBatches({
         companyId: req.user.companyId,
+        branchId,
         productId: item.productId,
         quantity: item.quantity,
         asOfDate: invoice.invoiceDate || new Date(),
@@ -646,6 +671,7 @@ exports.restoreSalesInvoice = async (req, res) => {
     for (const item of updatedItems) {
       await StockLedger.create({
         companyId: req.user.companyId,
+        branchId,
         productId: item.productId,
         type: "SALE",
         quantity: item.quantity,

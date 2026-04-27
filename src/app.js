@@ -29,6 +29,7 @@ const corsOptions = {
   allowedHeaders: [
     "Content-Type",
     "Authorization",
+    "X-Branch-Id",
     "X-Requested-With",
     "Accept",
     "Cache-Control",
@@ -101,8 +102,17 @@ app.use("/api/loans", loanRoutes);
 const bankAccountRoutes = require("./routes/bankAccountRoutes");
 app.use("/api/bank-accounts", bankAccountRoutes);
 
+const stockTransferRoutes = require("./routes/stockTransferRoutes");
+app.use("/api/stock-transfers", stockTransferRoutes);
+
+const collectionTransferRoutes = require("./routes/collectionTransferRoutes");
+app.use("/api/collection-transfers", collectionTransferRoutes);
+
 const settingsRoutes = require("./routes/settingsRoutes");
 app.use("/api/settings", settingsRoutes);
+
+const branchRoutes = require("./routes/branchRoutes");
+app.use("/api/branches", branchRoutes);
 
 const backupRoutes = require("./routes/backupRoutes");
 app.use("/api/backup", backupRoutes);

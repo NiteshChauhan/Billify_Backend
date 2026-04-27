@@ -6,6 +6,12 @@ const stockLedgerSchema = new mongoose.Schema({
     ref: "Company",
     required: true
   },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Branch",
+    default: null,
+    index: true,
+  },
   productId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "Product",
@@ -21,6 +27,8 @@ const stockLedgerSchema = new mongoose.Schema({
       "ADJUSTMENT",
       "PURCHASE_RETURN",
       "SALE_RETURN",
+      "TRANSFER_OUT",
+      "TRANSFER_IN",
     ],
     required: true
   },

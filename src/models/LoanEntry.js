@@ -9,6 +9,12 @@ const loanEntrySchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+      index: true,
+    },
     type: {
       type: String,
       enum: ["loan_in", "loan_out"],

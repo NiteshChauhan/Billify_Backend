@@ -8,6 +8,12 @@ const returnSchema = new mongoose.Schema(
       ref: "Company",
       required: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+      index: true,
+    },
     partyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Party",

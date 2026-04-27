@@ -46,6 +46,7 @@ exports.createProduct = async (req, res) => {
 
     await syncOpeningStock({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       productId: product._id,
       quantity: openingStock,
       rate: openingRate,
@@ -85,7 +86,7 @@ exports.getProducts = async (req, res) => {
 
     const productRows = await Promise.all(
       products.map(async (product) => {
-        const currentStock = await getAvailableStock(companyId, product._id);
+        const currentStock = await getAvailableStock(companyId, req.user.branchId || null, product._id);
         return {
           ...product,
           stock: Number(currentStock || 0),
@@ -163,6 +164,7 @@ exports.updateProduct = async (req, res) => {
     if (openingChanged) {
       await assertOpeningStockEditable(
         companyId,
+        req.user.branchId || null,
         productId,
         incomingOpeningStock,
         incomingOpeningRate,
@@ -192,6 +194,7 @@ exports.updateProduct = async (req, res) => {
 
     await syncOpeningStock({
       companyId,
+      branchId: req.user.branchId || null,
       productId,
       quantity: incomingOpeningStock,
       rate: incomingOpeningRate,
@@ -461,6 +464,7 @@ exports.bulkUploadProducts = async (req, res) => {
 
         await syncOpeningStock({
           companyId: req.user.companyId,
+          branchId: req.user.branchId || null,
           productId: product._id,
           quantity: stock,
           rate: price,
@@ -568,7 +572,7 @@ exports.getProductHistory = async (req, res) => {
       };
     });
 
-    const currentStock = await getAvailableStock(companyId, productId);
+    const currentStock = await getAvailableStock(companyId, req.user.branchId || null, productId);
 
     res.json({
       product,

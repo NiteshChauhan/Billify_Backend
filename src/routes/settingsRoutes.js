@@ -7,5 +7,6 @@ router.use(auth);
 
 router.get("/company", controller.getCompanySettings);
 router.post("/company", controller.saveCompanySettings);
+router.get("/branches", controller.getBranchSummary);
 
 module.exports = router;

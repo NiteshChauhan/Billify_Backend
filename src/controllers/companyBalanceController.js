@@ -15,6 +15,7 @@ exports.getCompanyBalance = async (req, res) => {
 
     const record = await CompanyBalance.findOne({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       date: startOfDay(date),
     });
 
@@ -39,10 +40,12 @@ exports.saveCompanyBalance = async (req, res) => {
     const record = await CompanyBalance.findOneAndUpdate(
       {
         companyId: req.user.companyId,
+        branchId: req.user.branchId || null,
         date: startOfDay(date),
       },
       {
         companyId: req.user.companyId,
+        branchId: req.user.branchId || null,
         date: startOfDay(date),
         openingBalance: normalizedOpeningBalance,
       },

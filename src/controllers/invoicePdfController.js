@@ -6,7 +6,10 @@ const { generateInvoicePdf } = require("../services/invoicePdfService");
 const { normalizePdfLanguageMode } = require("../utils/pdfLanguage");
 
 exports.salesInvoicePDF = async (req, res) => {
-  const invoice = await SalesInvoice.findById(req.params.id).populate(
+  const invoice = await SalesInvoice.findOne({
+    _id: req.params.id,
+    companyId: req.user.companyId,
+  }).populate(
     "items.productId",
     "name nameAr nameHi sku attributes",
   );
@@ -25,7 +28,10 @@ exports.salesInvoicePDF = async (req, res) => {
 };
 
 exports.purchaseInvoicePDF = async (req, res) => {
-  const invoice = await PurchaseInvoice.findById(req.params.id).populate(
+  const invoice = await PurchaseInvoice.findOne({
+    _id: req.params.id,
+    companyId: req.user.companyId,
+  }).populate(
     "items.productId",
     "name nameAr nameHi sku attributes",
   );

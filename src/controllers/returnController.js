@@ -157,9 +157,10 @@ const createReplacementSale = async ({
   const invoiceNo = `SAL-${count + 1}`;
 
   for (const item of items) {
-    const { breakdown, actualCost } = await consumeBatches({
-      companyId,
-      productId: item.productId,
+      const { breakdown, actualCost } = await consumeBatches({
+        companyId,
+        branchId: req.user.branchId || null,
+        productId: item.productId,
       quantity: item.quantity,
       asOfDate: invoiceDate || new Date(),
       sourceHint: "SALE_REPLACEMENT",
@@ -411,14 +412,14 @@ exports.createSaleReturn = async (req, res) => {
         (invItem) => String(invItem.productId) === String(item.productId),
       );
       if (soldItem && Array.isArray(soldItem.costBreakdown) && soldItem.costBreakdown.length) {
-        await restoreBatchesFromBreakdown(companyId, soldItem.costBreakdown, item.quantity);
+        await restoreBatchesFromBreakdown(companyId, req.user.branchId || null, soldItem.costBreakdown, item.quantity);
         item.costAmount = computeReturnCostFromBreakdown(
           soldItem.costBreakdown,
           item.quantity,
         );
       } else {
-        await restoreByAverageCost(companyId, item.productId, item.quantity, returnDate || new Date());
-        const avgRate = await computeLedgerAverageCost(companyId, item.productId, returnDate || new Date());
+        await restoreByAverageCost(companyId, req.user.branchId || null, item.productId, item.quantity, returnDate || new Date());
+        const avgRate = await computeLedgerAverageCost(companyId, req.user.branchId || null, item.productId, returnDate || new Date());
         item.costAmount = Number((avgRate * Number(item.quantity || 0)).toFixed(4));
       }
     }
@@ -432,6 +433,7 @@ exports.createSaleReturn = async (req, res) => {
 
     const returnEntry = await ReturnEntry.create({
       companyId,
+      branchId: req.user.branchId || null,
       partyId: invoice.partyId,
       returnType: "SALE_RETURN",
       billType: "SALE",
@@ -554,7 +556,7 @@ exports.createPurchaseReturn = async (req, res) => {
         item.amount = Number((item.quantity * item.rate).toFixed(2));
       }
 
-      const availableStock = await getAvailableStock(companyId, item.productId);
+      const availableStock = await getAvailableStock(companyId, req.user.branchId || null, item.productId);
       if (availableStock < item.quantity) {
         return res.status(400).json({
           message: `Insufficient stock for purchase return. Available: ${availableStock}`,
@@ -564,10 +566,11 @@ exports.createPurchaseReturn = async (req, res) => {
 
     for (const item of items) {
       try {
-        await consumePurchaseBatches(companyId, item.productId, invoice._id, item.quantity);
+        await consumePurchaseBatches(companyId, req.user.branchId || null, item.productId, invoice._id, item.quantity);
       } catch (err) {
         await consumeBatches({
           companyId,
+          branchId: req.user.branchId || null,
           productId: item.productId,
           quantity: item.quantity,
           asOfDate: returnDate || new Date(),
@@ -580,6 +583,7 @@ exports.createPurchaseReturn = async (req, res) => {
 
     const returnEntry = await ReturnEntry.create({
       companyId,
+      branchId: req.user.branchId || null,
       partyId: invoice.partyId,
       returnType: "PURCHASE_RETURN",
       billType: "PURCHASE",
@@ -805,7 +809,7 @@ exports.deleteReturn = async (req, res) => {
             item.quantity,
           );
         } else {
-          const availableStock = await getAvailableStock(req.user.companyId, item.productId);
+          const availableStock = await getAvailableStock(req.user.companyId, req.user.branchId || null, item.productId);
           if (availableStock < Number(item.quantity || 0)) {
             return res.status(400).json({
               message: "Return stock has already been used and cannot be deleted",
@@ -813,6 +817,7 @@ exports.deleteReturn = async (req, res) => {
           }
           await consumeBatches({
             companyId: req.user.companyId,
+            branchId: req.user.branchId || null,
             productId: item.productId,
             quantity: item.quantity,
             asOfDate: entry.returnDate || new Date(),
@@ -944,6 +949,7 @@ exports.restoreReturn = async (req, res) => {
         } else {
           await restoreByAverageCost(
             req.user.companyId,
+            req.user.branchId || null,
             item.productId,
             item.quantity,
             entry.returnDate || new Date(),
@@ -952,15 +958,16 @@ exports.restoreReturn = async (req, res) => {
       }
     } else {
       for (const item of entry.items || []) {
-        const availableStock = await getAvailableStock(req.user.companyId, item.productId);
+        const availableStock = await getAvailableStock(req.user.companyId, req.user.branchId || null, item.productId);
         if (availableStock < Number(item.quantity || 0)) {
           throw new Error("Insufficient stock to restore this purchase return");
         }
         try {
-          await consumePurchaseBatches(req.user.companyId, item.productId, entry.billId, item.quantity);
+          await consumePurchaseBatches(req.user.companyId, req.user.branchId || null, item.productId, entry.billId, item.quantity);
         } catch (err) {
           await consumeBatches({
             companyId: req.user.companyId,
+            branchId: req.user.branchId || null,
             productId: item.productId,
             quantity: item.quantity,
             asOfDate: entry.returnDate || new Date(),

@@ -8,6 +8,12 @@ const paymentSchema = new mongoose.Schema(
       ref: "Company",
       required: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+      index: true,
+    },
 
     // 🔥 Single party reference
     partyId: {

@@ -8,6 +8,12 @@ const salesInvoiceSchema = new mongoose.Schema(
       ref: "Company",
       required: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+      index: true,
+    },
 
     // 🔥 Changed from vendorId → partyId
     partyId: {
