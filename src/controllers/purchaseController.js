@@ -7,6 +7,7 @@ const BankAccount = require("../models/BankAccount");
 const Product = require("../models/Product");
 const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { withBranchScope } = require("../utils/branchScope");
 
 const toPurchaseResponse = (invoiceDoc) => {
   const invoice = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
@@ -64,8 +65,7 @@ exports.createPurchaseInvoice = async (req, res) => {
     let party = null;
     if (partyId) {
       party = await Party.findOne({
-        _id: partyId,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: partyId, companyId: req.user.companyId }, branchId, req.user.branchIsDefault),
         roles: "supplier",
       });
 
@@ -198,11 +198,14 @@ exports.createPurchaseInvoice = async (req, res) => {
 /* ================= GET ALL PURCHASES ================= */
 exports.getPurchases = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
-  const query = {
-    companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
-    ...(status === "deleted" ? { isDeleted: true } : {}),
-  };
+  const query = withBranchScope(
+    {
+      companyId: req.user.companyId,
+      ...(status === "deleted" ? { isDeleted: true } : {}),
+    },
+    req.user.branchId,
+    req.user.branchIsDefault,
+  );
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
     query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
@@ -222,11 +225,16 @@ exports.getPurchases = async (req, res) => {
 
 /* ================= GET PURCHASE BY ID ================= */
 exports.getPurchaseById = async (req, res) => {
-  const invoice = await PurchaseInvoice.findOne({
-    _id: req.params.id,
-    companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
-  })
+  const invoice = await PurchaseInvoice.findOne(
+    withBranchScope(
+      {
+        _id: req.params.id,
+        companyId: req.user.companyId,
+      },
+      req.user.branchId,
+      req.user.branchIsDefault,
+    ),
+  )
     .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
     .populate("partyId", "name")
     .populate("items.productId", "name");
@@ -252,11 +260,16 @@ exports.updatePurchaseInvoice = async (req, res) => {
     } = req.body;
     const partyId = bodyPartyId || supplierId;
 
-    const invoice = await PurchaseInvoice.findOne({
-      _id: id,
-      companyId: req.user.companyId,
-      branchId,
-    });
+    const invoice = await PurchaseInvoice.findOne(
+      withBranchScope(
+        {
+          _id: id,
+          companyId: req.user.companyId,
+        },
+        branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!invoice) {
       return res.status(404).json({ message: "Invoice not found" });
@@ -341,8 +354,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     let newParty = null;
     if (partyId) {
       newParty = await Party.findOne({
-        _id: partyId,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: partyId, companyId: req.user.companyId }, branchId, req.user.branchIsDefault),
         roles: "supplier",
       });
       if (!newParty) {
@@ -447,35 +459,55 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
 exports.deletePurchaseInvoice = async (req, res) => {
   try {
-    const invoice = await PurchaseInvoice.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const invoice = await PurchaseInvoice.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!invoice) {
       return res.status(404).json({ message: "Invoice not found" });
     }
 
     const [hasPayments, hasReturns, batches] = await Promise.all([
-      Payment.exists({
-        companyId: req.user.companyId,
-        branchId: req.user.branchId || null,
-        invoiceType: "PURCHASE",
-        invoiceId: invoice._id,
-      }),
-      ReturnEntry.exists({
-        companyId: req.user.companyId,
-        branchId: req.user.branchId || null,
-        billType: "PURCHASE",
-        billId: invoice._id,
-      }),
-      StockBatch.find({
-        companyId: req.user.companyId,
-        branchId: req.user.branchId || null,
-        sourceType: "PURCHASE",
-        sourceId: invoice._id,
-      }).select("totalQty remainingQty"),
+      Payment.exists(
+        withBranchScope(
+          {
+            companyId: req.user.companyId,
+            invoiceType: "PURCHASE",
+            invoiceId: invoice._id,
+          },
+          req.user.branchId,
+          req.user.branchIsDefault,
+        ),
+      ),
+      ReturnEntry.exists(
+        withBranchScope(
+          {
+            companyId: req.user.companyId,
+            billType: "PURCHASE",
+            billId: invoice._id,
+          },
+          req.user.branchId,
+          req.user.branchIsDefault,
+        ),
+      ),
+      StockBatch.find(
+        withBranchScope(
+          {
+            companyId: req.user.companyId,
+            sourceType: "PURCHASE",
+            sourceId: invoice._id,
+          },
+          req.user.branchId,
+          req.user.branchIsDefault,
+        ),
+      ).select("totalQty remainingQty"),
     ]);
 
     if (hasPayments) {
@@ -508,18 +540,28 @@ exports.deletePurchaseInvoice = async (req, res) => {
       }
     }
 
-    await StockLedger.deleteMany({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      referenceId: invoice._id,
-      referenceType: "PURCHASE_INVOICE",
-    });
-    await StockBatch.deleteMany({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      sourceType: "PURCHASE",
-      sourceId: invoice._id,
-    });
+    await StockLedger.deleteMany(
+      withBranchScope(
+        {
+          companyId: req.user.companyId,
+          referenceId: invoice._id,
+          referenceType: "PURCHASE_INVOICE",
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
+    await StockBatch.deleteMany(
+      withBranchScope(
+        {
+          companyId: req.user.companyId,
+          sourceType: "PURCHASE",
+          sourceId: invoice._id,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     invoice.isDeleted = true;
     invoice.deletedAt = new Date();
@@ -535,12 +577,17 @@ exports.deletePurchaseInvoice = async (req, res) => {
 exports.restorePurchaseInvoice = async (req, res) => {
   try {
     const branchId = req.user.branchId || null;
-    const invoice = await PurchaseInvoice.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId,
-      isDeleted: true,
-    }).setOptions({ withDeleted: true });
+    const invoice = await PurchaseInvoice.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+          isDeleted: true,
+        },
+        branchId,
+        req.user.branchIsDefault,
+      ),
+    ).setOptions({ withDeleted: true });
 
     if (!invoice) {
       return res.status(404).json({ message: "Deleted invoice not found" });

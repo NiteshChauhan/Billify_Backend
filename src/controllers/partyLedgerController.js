@@ -8,6 +8,7 @@ const Expense = require("../models/Expense");
 const Company = require("../models/Company");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { generateLedgerPdf } = require("../services/ledgerPdfService");
+const { withBranchScope } = require("../utils/branchScope");
 
 const isSameDay = (dateValue) => {
   const today = new Date().toISOString().slice(0, 10);
@@ -15,7 +16,7 @@ const isSameDay = (dateValue) => {
   return d === today;
 };
 
-const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) => {
+const buildLedger = async ({ companyId, partyId, role, query, bankAccountId, branchId, branchIsDefault = false }) => {
   const invoiceDateQuery = query ? { invoiceDate: query } : {};
   const paymentDateQuery = query ? { paymentDate: query } : {};
   const expenseDateQuery = query ? { date: query } : {};
@@ -31,7 +32,7 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
   const [purchases, sales, payments, returns, expenses] = await Promise.all([
     includeSupplier
       ? PurchaseInvoice.find({
-          companyId,
+          ...withBranchScope({ companyId }, branchId, branchIsDefault),
           partyId,
           ...invoiceDateQuery,
           ...(bankAccountId ? { bankAccountId } : {}),
@@ -41,7 +42,7 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
       : [],
     includeCustomer
       ? SalesInvoice.find({
-          companyId,
+          ...withBranchScope({ companyId }, branchId, branchIsDefault),
           partyId,
           ...invoiceDateQuery,
           ...(bankAccountId ? { bankAccountId } : {}),
@@ -50,7 +51,7 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
         )
       : [],
     Payment.find({
-      companyId,
+      ...withBranchScope({ companyId }, branchId, branchIsDefault),
       partyId,
       ...(bankAccountId ? { bankAccountId } : {}),
       ...(includeSupplier && !includeCustomer ? { invoiceType: "PURCHASE" } : {}),
@@ -60,7 +61,7 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
       "paymentDate amount paymentMode referenceNo paymentType invoiceType invoiceId bankAccountId adjustType _id",
     ),
     ReturnEntry.find({
-      companyId,
+      ...withBranchScope({ companyId }, branchId, branchIsDefault),
       partyId,
       ...(query ? { returnDate: query } : {}),
       ...(includeSupplier && !includeCustomer ? { returnType: "PURCHASE_RETURN" } : {}),
@@ -68,7 +69,7 @@ const buildLedger = async ({ companyId, partyId, role, query, bankAccountId }) =
     }).select("returnDate returnType totalAmount billType billId returnNo"),
     bankAccountId
       ? Expense.find({
-          companyId,
+          ...withBranchScope({ companyId }, branchId, branchIsDefault),
           paymentType: "bank",
           bankAccountId,
           ...expenseDateQuery,
@@ -225,7 +226,9 @@ exports.getPartyLedger = async (req, res) => {
         : rawRole;
     const bankAccountId = req.query.bankAccountId || "";
 
-    const party = await Party.findOne({ _id: partyId, companyId });
+    const party = await Party.findOne(
+      withBranchScope({ _id: partyId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
     if (!party) {
       return res.status(404).json({ message: "Party not found" });
     }
@@ -241,6 +244,8 @@ exports.getPartyLedger = async (req, res) => {
       role,
       query,
       bankAccountId,
+      branchId: req.user.branchId,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
@@ -298,7 +303,9 @@ exports.exportPartyLedgerPdf = async (req, res) => {
         : rawRole;
     const bankAccountId = req.query.bankAccountId || "";
 
-    const party = await Party.findOne({ _id: partyId, companyId });
+    const party = await Party.findOne(
+      withBranchScope({ _id: partyId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
     if (!party) {
       return res.status(404).json({ message: "Party not found" });
     }
@@ -308,7 +315,15 @@ exports.exportPartyLedgerPdf = async (req, res) => {
       ? { $gte: range.fromDate, $lte: range.toDate }
       : null;
 
-    let ledger = await buildLedger({ companyId, partyId, role, query, bankAccountId });
+    let ledger = await buildLedger({
+      companyId,
+      partyId,
+      role,
+      query,
+      bankAccountId,
+      branchId: req.user.branchId,
+      branchIsDefault: req.user.branchIsDefault,
+    });
 
     if (filterType === "cash" || filterType === "bank" || filterType === "credit") {
       ledger = ledger.filter((e) => e.paymentType === filterType);

@@ -3,6 +3,7 @@ const SalesInvoice = require("../models/SalesInvoice");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Payment = require("../models/Payment");
 const ReturnEntry = require("../models/Return");
+const { withBranchScope } = require("../utils/branchScope");
 const normalizeRoles = (roles = []) => {
   const list = Array.isArray(roles) ? roles : [roles];
   return [...new Set(
@@ -24,7 +25,7 @@ exports.createParty = async (req, res) => {
     }
 
     let party = await Party.findOne({
-      companyId: req.user.companyId,
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       name: name.trim(),
     });
 
@@ -46,6 +47,7 @@ exports.createParty = async (req, res) => {
 
     party = await Party.create({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       name: name.trim(),
       ...req.body,
       roles,
@@ -66,7 +68,7 @@ exports.createParty = async (req, res) => {
 exports.getAllParties = async (req, res) => {
   try {
     const parties = await Party.find({
-      companyId: req.user.companyId,
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
     });
 
@@ -80,8 +82,7 @@ exports.getAllParties = async (req, res) => {
 exports.getPartyById = async (req, res) => {
   try {
     const party = await Party.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
+      ...withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
     });
 
@@ -98,8 +99,7 @@ exports.getPartyById = async (req, res) => {
 exports.getPartyOutstanding = async (req, res) => {
   try {
     const party = await Party.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
+      ...withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
     });
 
@@ -108,15 +108,15 @@ exports.getPartyOutstanding = async (req, res) => {
     }
 
     const [sales, purchases, payments, returns] = await Promise.all([
-      SalesInvoice.find({ companyId: req.user.companyId, partyId: party._id })
+      SalesInvoice.find(withBranchScope({ companyId: req.user.companyId, partyId: party._id }, req.user.branchId, req.user.branchIsDefault))
         .select("invoiceNo invoiceDate totalAmount paidAmount pendingAmount")
         .sort({ invoiceDate: 1, createdAt: 1 }),
-      PurchaseInvoice.find({ companyId: req.user.companyId, partyId: party._id })
+      PurchaseInvoice.find(withBranchScope({ companyId: req.user.companyId, partyId: party._id }, req.user.branchId, req.user.branchIsDefault))
         .select("invoiceNo invoiceDate totalAmount paidAmount pendingAmount")
         .sort({ invoiceDate: 1, createdAt: 1 }),
-      Payment.find({ companyId: req.user.companyId, partyId: party._id })
+      Payment.find(withBranchScope({ companyId: req.user.companyId, partyId: party._id }, req.user.branchId, req.user.branchIsDefault))
         .select("amount paymentType invoiceType invoiceId adjustType"),
-      ReturnEntry.find({ companyId: req.user.companyId, partyId: party._id })
+      ReturnEntry.find(withBranchScope({ companyId: req.user.companyId, partyId: party._id }, req.user.branchId, req.user.branchIsDefault))
         .select("billId billType returnType totalAmount"),
     ]);
 
@@ -233,7 +233,7 @@ exports.getPartyOutstanding = async (req, res) => {
 exports.getSuppliers = async (req, res) => {
   try {
     const suppliers = await Party.find({
-      companyId: req.user.companyId,
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
       roles: "supplier",
     });
@@ -248,7 +248,7 @@ exports.getSuppliers = async (req, res) => {
 exports.getVendors = async (req, res) => {
   try {
     const vendors = await Party.find({
-      companyId: req.user.companyId,
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
       roles: "customer",
     });
@@ -263,7 +263,7 @@ exports.getVendors = async (req, res) => {
 exports.getCustomers = async (req, res) => {
   try {
     const customers = await Party.find({
-      companyId: req.user.companyId,
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
       roles: "customer",
     });
@@ -282,10 +282,9 @@ exports.updateParty = async (req, res) => {
       payload.roles = normalizeRoles(payload.roles || payload.role || payload.type);
     }
 
-    const existing = await Party.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-    });
+    const existing = await Party.findOne(
+      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
 
     if (!existing) {
       return res.status(404).json({ message: "Party not found" });
@@ -307,8 +306,7 @@ exports.updateParty = async (req, res) => {
 
     const party = await Party.findOneAndUpdate(
       {
-        _id: req.params.id,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       },
       payload,
       { new: true },
@@ -325,8 +323,7 @@ exports.deleteParty = async (req, res) => {
   try {
     await Party.findOneAndUpdate(
       {
-        _id: req.params.id,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       },
       { isActive: false },
     );

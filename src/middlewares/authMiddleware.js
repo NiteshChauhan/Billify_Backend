@@ -1,6 +1,15 @@
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const User = require("../models/User");
 const { getSelectedBranchForCompany } = require("../utils/branchContext");
+const { isMainBranchAlias } = require("../utils/branchScope");
+
+const normalizeSelectedBranchId = (branch) => {
+  const id = branch?._id;
+  if (isMainBranchAlias(id)) return null;
+  const value = String(id || "");
+  return mongoose.Types.ObjectId.isValid(value) ? value : null;
+};
 
 module.exports = async (req, res, next) => {
   if (req.method === "OPTIONS") {
@@ -74,7 +83,8 @@ module.exports = async (req, res, next) => {
       userId: String(user._id),
       role: user.role,
       companyId: String(user.companyId),
-      branchId: selectedBranch ? String(selectedBranch._id) : null,
+      branchId: normalizeSelectedBranchId(selectedBranch),
+      branchIsDefault: Boolean(selectedBranch?.isDefault),
       branches,
       selectedBranch,
     };

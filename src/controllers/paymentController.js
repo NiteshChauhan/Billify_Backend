@@ -5,8 +5,12 @@ const SalesInvoice = require("../models/SalesInvoice");
 const BankAccount = require("../models/BankAccount");
 const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { withBranchScope } = require("../utils/branchScope");
 
-const getRemainingOpeningBalance = async ({ party, companyId, branchId }) => {
+const withRequestBranchScope = (req, query = {}) =>
+  withBranchScope(query, req.user.branchId, req.user.branchIsDefault);
+
+const getRemainingOpeningBalance = async ({ party, companyId, branchId, branchIsDefault = false }) => {
   const openingBalance = Number(party?.openingBalance || 0);
   if (!(openingBalance > 0)) {
     return 0;
@@ -20,8 +24,7 @@ const getRemainingOpeningBalance = async ({ party, companyId, branchId }) => {
   const openingPayments = await Payment.aggregate([
     {
       $match: {
-        companyId: party.companyId || companyId,
-        branchId: branchId || null,
+        ...withBranchScope({ companyId: party.companyId || companyId }, branchId, branchIsDefault),
         partyId: party._id,
         $or: [{ adjustType: "opening" }, { invoiceType: "OPENING" }],
       },
@@ -38,7 +41,7 @@ const getRemainingOpeningBalance = async ({ party, companyId, branchId }) => {
   return Math.max(0, openingBalance - paidAgainstOpening);
 };
 
-const getPendingAmount = async ({ invoice, invoiceType, companyId, branchId }) => {
+const getPendingAmount = async ({ invoice, invoiceType, companyId, branchId, branchIsDefault = false }) => {
   const normalizedType = String(invoiceType || "").toUpperCase();
   const totalAmount = Number(invoice?.totalAmount || 0);
 
@@ -46,8 +49,7 @@ const getPendingAmount = async ({ invoice, invoiceType, companyId, branchId }) =
     Payment.aggregate([
       {
         $match: {
-          companyId,
-          branchId: branchId || null,
+          ...withBranchScope({ companyId }, branchId, branchIsDefault),
           partyId: invoice.partyId,
           invoiceType: normalizedType,
           invoiceId: invoice._id,
@@ -64,8 +66,7 @@ const getPendingAmount = async ({ invoice, invoiceType, companyId, branchId }) =
     ReturnEntry.aggregate([
       {
         $match: {
-          companyId,
-          branchId: branchId || null,
+          ...withBranchScope({ companyId }, branchId, branchIsDefault),
           partyId: invoice.partyId,
           billType: normalizedType,
           billId: invoice._id,
@@ -96,7 +97,7 @@ const updateInvoiceAmounts = async (invoice) => {
   await invoice.save();
 };
 
-const reversePaymentImpact = async ({ payment, companyId, branchId }) => {
+const reversePaymentImpact = async ({ payment, companyId, branchId, branchIsDefault = false }) => {
   const party = payment.partyId
     ? await Party.findOne({ _id: payment.partyId, companyId })
     : null;
@@ -120,9 +121,7 @@ const reversePaymentImpact = async ({ payment, companyId, branchId }) => {
   if (!InvoiceModel) return;
 
   const invoice = await InvoiceModel.findOne({
-    _id: payment.invoiceId,
-    companyId,
-    branchId: branchId || null,
+    ...withBranchScope({ _id: payment.invoiceId, companyId }, branchId, branchIsDefault),
   });
 
   if (invoice) {
@@ -136,14 +135,14 @@ const reversePaymentImpact = async ({ payment, companyId, branchId }) => {
   }
 };
 
-const restorePaymentImpact = async ({ payment, companyId, branchId }) => {
+const restorePaymentImpact = async ({ payment, companyId, branchId, branchIsDefault = false }) => {
   const party = payment.partyId
     ? await Party.findOne({ _id: payment.partyId, companyId })
     : null;
 
   if (String(payment.adjustType || "").toLowerCase() === "opening" || payment.invoiceType === "OPENING") {
     if (party) {
-      const remainingOpening = await getRemainingOpeningBalance({ party, companyId, branchId });
+      const remainingOpening = await getRemainingOpeningBalance({ party, companyId, branchId, branchIsDefault });
       if (Number(payment.amount || 0) > remainingOpening) {
         throw new Error("Cannot restore payment because opening balance is already settled");
       }
@@ -159,9 +158,7 @@ const restorePaymentImpact = async ({ payment, companyId, branchId }) => {
   if (!InvoiceModel) return;
 
   const invoice = await InvoiceModel.findOne({
-    _id: payment.invoiceId,
-    companyId,
-    branchId: branchId || null,
+    ...withBranchScope({ _id: payment.invoiceId, companyId }, branchId, branchIsDefault),
   });
 
   if (!invoice) {
@@ -173,6 +170,7 @@ const restorePaymentImpact = async ({ payment, companyId, branchId }) => {
     invoiceType: payment.invoiceType,
     companyId,
     branchId,
+    branchIsDefault,
   });
 
   if (Number(payment.amount || 0) > pendingAmount) {
@@ -217,11 +215,12 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
   } = req.body;
 
   if (invoiceType === "PURCHASE") {
-    const invoice = await PurchaseInvoice.findOne({
-      _id: invoiceId,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const invoice = await PurchaseInvoice.findOne(
+      withRequestBranchScope(req, {
+        _id: invoiceId,
+        companyId: req.user.companyId,
+      }),
+    );
 
     if (!invoice) {
       throw new Error("Purchase invoice not found");
@@ -232,7 +231,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
       throw new Error("partyId is required");
     }
 
-    const party = await Party.findById(partyId);
+    const party = await Party.findOne(withRequestBranchScope(req, { _id: partyId, companyId: req.user.companyId }));
     if (!party) {
       throw new Error("Party not found");
     }
@@ -242,6 +241,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
         party,
         companyId: req.user.companyId,
         branchId: req.user.branchId || null,
+        branchIsDefault: req.user.branchIsDefault,
       });
       if (!(remainingOpening > 0)) {
         throw new Error("Opening balance is not available for adjustment");
@@ -252,8 +252,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
 
       const payment = await Payment.create({
         companyId: req.user.companyId,
-        branchId: req.user.branchId || null,
-        partyId,
+          partyId,
         invoiceType: "OPENING",
         invoiceId: null,
         paymentType: "PAID",
@@ -277,6 +276,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
       invoiceType: "PURCHASE",
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
+      branchIsDefault: req.user.branchIsDefault,
     });
     if (amount > balance) {
       throw new Error(`Payment exceeds outstanding amount (Rs ${balance})`);
@@ -284,8 +284,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
 
     const payment = await Payment.create({
       companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      partyId,
+          partyId,
       invoiceType,
       invoiceId,
       paymentType: "PAID",
@@ -307,11 +306,12 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
   }
 
   if (invoiceType === "SALE") {
-    const invoice = await SalesInvoice.findOne({
-      _id: invoiceId,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const invoice = await SalesInvoice.findOne(
+      withRequestBranchScope(req, {
+        _id: invoiceId,
+        companyId: req.user.companyId,
+      }),
+    );
 
     if (!invoice) {
       throw new Error("Sales invoice not found");
@@ -322,7 +322,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
       throw new Error("partyId is required");
     }
 
-    const party = await Party.findById(partyId);
+    const party = await Party.findOne(withRequestBranchScope(req, { _id: partyId, companyId: req.user.companyId }));
     if (!party) {
       throw new Error("Party not found");
     }
@@ -332,6 +332,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
         party,
         companyId: req.user.companyId,
         branchId: req.user.branchId || null,
+        branchIsDefault: req.user.branchIsDefault,
       });
       if (!(remainingOpening > 0)) {
         throw new Error("Opening balance is not available for adjustment");
@@ -367,6 +368,7 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
       invoiceType: "SALE",
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
+      branchIsDefault: req.user.branchIsDefault,
     });
     if (amount > balance) {
       throw new Error(`Payment exceeds outstanding amount (Rs ${balance})`);
@@ -416,7 +418,7 @@ const createAllocatedPayments = async ({ req, bankAccountId }) => {
     throw new Error("allocations are required");
   }
 
-  const party = await Party.findOne({ _id: partyId, companyId: req.user.companyId });
+  const party = await Party.findOne(withRequestBranchScope(req, { _id: partyId, companyId: req.user.companyId }));
   if (!party) {
     throw new Error("Party not found");
   }
@@ -450,6 +452,7 @@ const createAllocatedPayments = async ({ req, bankAccountId }) => {
         party,
         companyId: req.user.companyId,
         branchId: req.user.branchId || null,
+        branchIsDefault: req.user.branchIsDefault,
       });
       if (!(remainingOpening > 0)) {
         throw new Error("Opening balance is not available for adjustment");
@@ -488,12 +491,13 @@ const createAllocatedPayments = async ({ req, bankAccountId }) => {
     }
 
     const InvoiceModel = allocation.type === "sale" ? SalesInvoice : PurchaseInvoice;
-    const invoice = await InvoiceModel.findOne({
-      _id: allocation.refId,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      partyId: party._id,
-    });
+    const invoice = await InvoiceModel.findOne(
+      withRequestBranchScope(req, {
+        _id: allocation.refId,
+        companyId: req.user.companyId,
+        partyId: party._id,
+      }),
+    );
 
     if (!invoice) {
       throw new Error(`${allocation.type} reference not found`);
@@ -504,6 +508,7 @@ const createAllocatedPayments = async ({ req, bankAccountId }) => {
       invoiceType: allocation.type === "sale" ? "SALE" : "PURCHASE",
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
+      branchIsDefault: req.user.branchIsDefault,
     });
     if (allocation.amount > pendingAmount) {
       throw new Error(`Allocation exceeds pending amount for ${invoice.invoiceNo || allocation.type}`);
@@ -584,12 +589,11 @@ exports.createPayment = async (req, res) => {
 /* ================= GET PAYMENTS BY INVOICE ================= */
 exports.getPaymentsByInvoice = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
-  const query = {
+  const query = withRequestBranchScope(req, {
     companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
     invoiceId: req.params.invoiceId,
     ...(status === "deleted" ? { isDeleted: true } : {}),
-  };
+  });
   const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
@@ -606,11 +610,10 @@ exports.getPaymentsByInvoice = async (req, res) => {
 /* ================= GET PAYMENTS LIST ================= */
 exports.getPayments = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
-  const query = {
+  const query = withRequestBranchScope(req, {
     companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
     ...(status === "deleted" ? { isDeleted: true } : {}),
-  };
+  });
   const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
@@ -627,11 +630,16 @@ exports.getPayments = async (req, res) => {
 
 exports.deletePayment = async (req, res) => {
   try {
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const payment = await Payment.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!payment) {
       return res.status(404).json({ error: "Payment not found" });
@@ -641,6 +649,7 @@ exports.deletePayment = async (req, res) => {
       payment,
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     payment.isDeleted = true;
@@ -656,12 +665,17 @@ exports.deletePayment = async (req, res) => {
 
 exports.restorePayment = async (req, res) => {
   try {
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      isDeleted: true,
-    }).setOptions({ withDeleted: true });
+    const payment = await Payment.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+          isDeleted: true,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    ).setOptions({ withDeleted: true });
 
     if (!payment) {
       return res.status(404).json({ error: "Deleted payment not found" });
@@ -671,6 +685,7 @@ exports.restorePayment = async (req, res) => {
       payment,
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     payment.isDeleted = false;

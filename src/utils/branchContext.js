@@ -1,4 +1,5 @@
 const Branch = require("../models/Branch");
+const { isMainBranchAlias } = require("./branchScope");
 
 const normalizeBranch = (branch) => ({
   _id: String(branch._id),
@@ -43,22 +44,25 @@ const ensureDefaultBranch = async (companyId) => {
 };
 
 const getSelectedBranchForCompany = async (companyId, requestedBranchId) => {
+  const normalizedRequestedBranchId = isMainBranchAlias(requestedBranchId)
+    ? null
+    : requestedBranchId;
   const branches = await listCompanyBranches(companyId);
   if (!branches.length) {
     const branch = await ensureDefaultBranch(companyId);
     return {
       branches: [normalizeBranch(branch)],
       selectedBranch: normalizeBranch(branch),
-      requestedValid: !requestedBranchId || String(branch._id) === String(requestedBranchId),
+      requestedValid: !normalizedRequestedBranchId || String(branch._id) === String(normalizedRequestedBranchId),
     };
   }
 
   let selectedBranch = null;
   let requestedValid = true;
 
-  if (requestedBranchId) {
+  if (normalizedRequestedBranchId) {
     selectedBranch =
-      branches.find((branch) => String(branch._id) === String(requestedBranchId)) || null;
+      branches.find((branch) => String(branch._id) === String(normalizedRequestedBranchId)) || null;
     requestedValid = Boolean(selectedBranch);
   }
 

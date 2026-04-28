@@ -7,6 +7,12 @@ const productSchema = new mongoose.Schema({
     ref: "Company",
     required: true
   },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "Branch",
+    default: null,
+    index: true,
+  },
   name: String,
   nameAr: String,
   nameHi: String,

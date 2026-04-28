@@ -8,9 +8,9 @@ const { withBranchScope } = require("./branchScope");
 
 const round2 = (value) => Number(Number(value || 0).toFixed(2));
 
-const computeEntryCost = async (companyId, branchId, saleEntry) => {
+const computeEntryCost = async (companyId, branchId, saleEntry, branchIsDefault = false) => {
   const stockEntries = await StockLedger.find({
-    ...withBranchScope({ companyId, productId: saleEntry.productId }, branchId),
+    ...withBranchScope({ companyId, productId: saleEntry.productId }, branchId, branchIsDefault),
     type: { $in: ["PURCHASE", "OPENING", "PURCHASE_RETURN"] },
     createdAt: { $lte: saleEntry.createdAt },
   });
@@ -33,7 +33,7 @@ const computeEntryCost = async (companyId, branchId, saleEntry) => {
   return totalQty > 0 ? totalValue / totalQty : 0;
 };
 
-const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
+const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = [], branchIsDefault = false) => {
   if (!invoices.length) {
     return new Map();
   }
@@ -89,7 +89,7 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
   }
 
   const saleEntries = await StockLedger.find({
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchId, branchIsDefault),
     type: "SALE",
     referenceId: { $in: legacyInvoiceIds },
   }).sort({ createdAt: 1 });
@@ -101,7 +101,7 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
   const productMap = new Map(products.map((product) => [String(product._id), product.name]));
 
   for (const entry of saleEntries) {
-    const avgCost = await computeEntryCost(companyId, branchId, entry);
+    const avgCost = await computeEntryCost(companyId, branchId, entry, branchIsDefault);
     const invoiceId = String(entry.referenceId);
     const current = invoiceMetrics.get(invoiceId) || {
       saleAmount: 0,
@@ -126,7 +126,7 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
   return invoiceMetrics;
 };
 
-const computeReturnItemCost = async (companyId, branchId, saleItem, returnQty, returnDate) => {
+const computeReturnItemCost = async (companyId, branchId, saleItem, returnQty, returnDate, branchIsDefault = false) => {
   const qty = Number(returnQty || 0);
   if (!(qty > 0)) return 0;
   const breakdown = Array.isArray(saleItem.costBreakdown) ? saleItem.costBreakdown : [];
@@ -152,15 +152,16 @@ const computeReturnItemCost = async (companyId, branchId, saleItem, returnQty, r
     return Number(((actualCost / soldQty) * qty).toFixed(4));
   }
 
-  const avgRate = await computeLedgerAverageCost(companyId, branchId, saleItem.productId, returnDate || new Date());
+  const avgRate = await computeLedgerAverageCost(companyId, branchId, saleItem.productId, returnDate || new Date(), branchIsDefault);
   return Number((avgRate * qty).toFixed(4));
 };
 
 exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, options = {}) => {
   const { includeEntries = false } = options;
+  const branchIsDefault = Boolean(options.branchIsDefault);
 
   const paidSales = await SalesInvoice.find({
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchId, branchIsDefault),
     status: "PAID",
   })
     .populate("partyId", "name")
@@ -168,11 +169,11 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, 
     .select("_id invoiceNo invoiceDate totalAmount paidAmount paymentType partyId items");
 
   const invoiceIds = paidSales.map((invoice) => invoice._id);
-  const saleMetricsMap = await buildSaleInvoiceMetrics(companyId, branchId, paidSales);
+  const saleMetricsMap = await buildSaleInvoiceMetrics(companyId, branchId, paidSales, branchIsDefault);
 
   const payments = invoiceIds.length
       ? await Payment.find({
-        ...withBranchScope({ companyId }, branchId),
+        ...withBranchScope({ companyId }, branchId, branchIsDefault),
         invoiceType: "SALE",
         invoiceId: { $in: invoiceIds },
         paymentType: "RECEIVED",
@@ -247,7 +248,7 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, 
 
   const paidSalesMap = new Map(paidSales.map((invoice) => [String(invoice._id), invoice]));
   const saleReturns = await ReturnEntry.find({
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchId, branchIsDefault),
     returnType: "SALE_RETURN",
     returnDate: { $gte: fromDate, $lte: toDate },
   })
@@ -275,9 +276,9 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, 
         (row) => String(row.productId?._id || row.productId) === String(item.productId?._id || item.productId),
       );
       if (saleItem) {
-        returnCostAmount += await computeReturnItemCost(companyId, branchId, saleItem, qty, ret.returnDate);
+        returnCostAmount += await computeReturnItemCost(companyId, branchId, saleItem, qty, ret.returnDate, branchIsDefault);
       } else {
-        const avgRate = await computeLedgerAverageCost(companyId, branchId, item.productId, ret.returnDate);
+        const avgRate = await computeLedgerAverageCost(companyId, branchId, item.productId, ret.returnDate, branchIsDefault);
         returnCostAmount += avgRate * qty;
       }
 

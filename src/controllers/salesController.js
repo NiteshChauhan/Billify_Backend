@@ -13,6 +13,7 @@ const {
   restoreByAverageCost,
 } = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { withBranchScope } = require("../utils/branchScope");
 
 const toSalesResponse = (invoiceDoc) => {
   const invoice = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
@@ -109,8 +110,7 @@ exports.createSalesInvoice = async (req, res) => {
     let party = null;
     if (partyId) {
       party = await Party.findOne({
-        _id: partyId,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: partyId, companyId: req.user.companyId }, branchId, req.user.branchIsDefault),
         roles: { $in: ["customer", "vendor"] },
       });
 
@@ -123,9 +123,9 @@ exports.createSalesInvoice = async (req, res) => {
 
     // 1️⃣ Validate stock
     for (const item of items) {
-      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date());
+      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date(), req.user.branchIsDefault);
     }
-    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items);
+    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items, req.user.branchIsDefault);
     const saleProducts = await loadSaleProducts(req.user.companyId, items);
 
     // 2️⃣ Calculate totals
@@ -148,6 +148,7 @@ exports.createSalesInvoice = async (req, res) => {
         asOfDate: invoiceDate || new Date(),
         sourceHint: "SALE",
         allowNegative: !saleValidation.stockSettlementEnabled,
+        branchIsDefault: req.user.branchIsDefault,
       });
       item.costBreakdown = breakdown;
       item.actualCost = Number(actualCost || 0);
@@ -204,6 +205,7 @@ exports.createSalesInvoice = async (req, res) => {
     for (const item of items) {
       await StockLedger.create({
         companyId: req.user.companyId,
+        branchId,
         productId: item.productId,
         type: "SALE",
         quantity: item.quantity,
@@ -259,11 +261,14 @@ exports.createSalesInvoice = async (req, res) => {
 /* ================= GET SALES LIST ================= */
 exports.getSales = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
-  const query = {
-    companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
-    ...(status === "deleted" ? { isDeleted: true } : {}),
-  };
+  const query = withBranchScope(
+    {
+      companyId: req.user.companyId,
+      ...(status === "deleted" ? { isDeleted: true } : {}),
+    },
+    req.user.branchId,
+    req.user.branchIsDefault,
+  );
   const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
@@ -283,11 +288,16 @@ exports.getSales = async (req, res) => {
 
 /* ================= GET SALES BY ID ================= */
 exports.getSalesById = async (req, res) => {
-  const invoice = await SalesInvoice.findOne({
-    _id: req.params.id,
-    companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
-  })
+  const invoice = await SalesInvoice.findOne(
+    withBranchScope(
+      {
+        _id: req.params.id,
+        companyId: req.user.companyId,
+      },
+      req.user.branchId,
+      req.user.branchIsDefault,
+    ),
+  )
     .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
     .populate("partyId", "name")
     .populate("items.productId", "name");
@@ -318,11 +328,16 @@ exports.updateSalesInvoice = async (req, res) => {
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
-    const invoice = await SalesInvoice.findOne({
-      _id: id,
-      companyId: req.user.companyId,
-      branchId,
-    });
+    const invoice = await SalesInvoice.findOne(
+      withBranchScope(
+        {
+          _id: id,
+          companyId: req.user.companyId,
+        },
+        branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!invoice) {
       return res.status(404).json({ message: "Invoice not found" });
@@ -400,9 +415,9 @@ exports.updateSalesInvoice = async (req, res) => {
 
     /* ================= VALIDATE STOCK AGAIN ================= */
     for (const item of items) {
-      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date());
+      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date(), req.user.branchIsDefault);
     }
-    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items);
+    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items, req.user.branchIsDefault);
     const saleProducts = await loadSaleProducts(req.user.companyId, items);
 
     /* ================= RECALCULATE ================= */
@@ -437,6 +452,7 @@ exports.updateSalesInvoice = async (req, res) => {
         asOfDate: invoiceDate || new Date(),
         sourceHint: "SALE_EDIT",
         allowNegative: !saleValidation.stockSettlementEnabled,
+        branchIsDefault: req.user.branchIsDefault,
       });
       item.costBreakdown = breakdown;
       item.actualCost = Number(actualCost || 0);
@@ -447,8 +463,7 @@ exports.updateSalesInvoice = async (req, res) => {
     let newParty = null;
     if (partyId) {
       newParty = await Party.findOne({
-        _id: partyId,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: partyId, companyId: req.user.companyId }, branchId, req.user.branchIsDefault),
         roles: { $in: ["customer", "vendor"] },
       });
       if (!newParty) {
@@ -542,11 +557,16 @@ exports.updateSalesInvoice = async (req, res) => {
 
 exports.deleteSalesInvoice = async (req, res) => {
   try {
-    const invoice = await SalesInvoice.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const invoice = await SalesInvoice.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!invoice) {
       return res.status(404).json({ message: "Invoice not found" });
@@ -601,17 +621,23 @@ exports.deleteSalesInvoice = async (req, res) => {
             item.productId,
             item.quantity,
             invoice.invoiceDate || new Date(),
+            req.user.branchIsDefault,
           );
         }
       }
     }
 
-    await StockLedger.deleteMany({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      referenceId: invoice._id,
-      referenceType: "SALES_INVOICE",
-    });
+    await StockLedger.deleteMany(
+      withBranchScope(
+        {
+          companyId: req.user.companyId,
+          referenceId: invoice._id,
+          referenceType: "SALES_INVOICE",
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     invoice.isDeleted = true;
     invoice.deletedAt = new Date();
@@ -627,12 +653,17 @@ exports.deleteSalesInvoice = async (req, res) => {
 exports.restoreSalesInvoice = async (req, res) => {
   try {
     const branchId = req.user.branchId || null;
-    const invoice = await SalesInvoice.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId,
-      isDeleted: true,
-    }).setOptions({ withDeleted: true });
+    const invoice = await SalesInvoice.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+          isDeleted: true,
+        },
+        branchId,
+        req.user.branchIsDefault,
+      ),
+    ).setOptions({ withDeleted: true });
 
     if (!invoice) {
       return res.status(404).json({ message: "Deleted invoice not found" });
@@ -640,9 +671,9 @@ exports.restoreSalesInvoice = async (req, res) => {
 
     const updatedItems = [];
     for (const item of invoice.items || []) {
-      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoice.invoiceDate || new Date());
+      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoice.invoiceDate || new Date(), req.user.branchIsDefault);
     }
-    const saleValidation = await validateStockForSale(req.user.companyId, branchId, invoice.items || []);
+    const saleValidation = await validateStockForSale(req.user.companyId, branchId, invoice.items || [], req.user.branchIsDefault);
     const saleProducts = await loadSaleProducts(req.user.companyId, invoice.items || []);
 
     for (const item of invoice.items || []) {
@@ -661,6 +692,7 @@ exports.restoreSalesInvoice = async (req, res) => {
         asOfDate: invoice.invoiceDate || new Date(),
         sourceHint: "SALE_RESTORE",
         allowNegative: !saleValidation.stockSettlementEnabled,
+        branchIsDefault: req.user.branchIsDefault,
       });
       normalizedItem.costBreakdown = breakdown;
       normalizedItem.actualCost = Number(actualCost || 0);

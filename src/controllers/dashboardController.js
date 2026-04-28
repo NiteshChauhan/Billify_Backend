@@ -4,6 +4,7 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Payment = require("../models/Payment");
 const Product = require("../models/Product");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { withBranchScope } = require("../utils/branchScope");
 
 exports.getDashboardSummary = async (req, res) => {
   try {
@@ -13,25 +14,29 @@ exports.getDashboardSummary = async (req, res) => {
       ? { invoiceDate: { $gte: range.fromDate, $lte: range.toDate } }
       : {};
 
+    const salesMatch = withBranchScope({ companyId: companyObjectId, ...invoiceDateFilter }, req.user.branchId, req.user.branchIsDefault);
+    const purchaseMatch = withBranchScope({ companyId: companyObjectId, ...invoiceDateFilter }, req.user.branchId, req.user.branchIsDefault);
+    const paymentMatch = withBranchScope(
+      {
+        companyId: companyObjectId,
+        invoiceType: "SALE",
+        ...(range ? { paymentDate: { $gte: range.fromDate, $lte: range.toDate } } : {}),
+      },
+      req.user.branchId,
+      req.user.branchIsDefault,
+    );
+
     const [salesAgg, purchaseAgg, paymentAgg, totalProducts] = await Promise.all([
       SalesInvoice.aggregate([
-        { $match: { companyId: companyObjectId, ...invoiceDateFilter } },
+        { $match: salesMatch },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
       ]),
       PurchaseInvoice.aggregate([
-        { $match: { companyId: companyObjectId, ...invoiceDateFilter } },
+        { $match: purchaseMatch },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
       ]),
       Payment.aggregate([
-        {
-          $match: {
-            companyId: companyObjectId,
-            invoiceType: "SALE",
-            ...(range
-              ? { paymentDate: { $gte: range.fromDate, $lte: range.toDate } }
-              : {}),
-          },
-        },
+        { $match: paymentMatch },
         { $group: { _id: null, total: { $sum: "$amount" } } },
       ]),
       Product.countDocuments({ companyId: companyObjectId }),
@@ -42,7 +47,7 @@ exports.getDashboardSummary = async (req, res) => {
     const end = new Date(`${year}-12-31T23:59:59.999Z`);
 
     const buildMonthlyPipeline = () => [
-      { $match: { companyId: companyObjectId } },
+      { $match: withBranchScope({ companyId: companyObjectId }, req.user.branchId, req.user.branchIsDefault) },
       {
         $addFields: {
           chartDate: {

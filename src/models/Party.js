@@ -7,6 +7,11 @@ const partySchema = new mongoose.Schema(
       ref: "Company",
       required: true,
     },
+    branchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Branch",
+      default: null,
+    },
 
     name: { type: String, required: true },
     phone: String,

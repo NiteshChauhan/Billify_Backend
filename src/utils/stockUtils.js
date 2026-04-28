@@ -2,8 +2,8 @@ const StockLedger = require("../models/StockLedger");
 const StockBatch = require("../models/StockBatch");
 const { withBranchScope } = require("./branchScope");
 
-const getLedgerAvailableStock = async (companyId, branchId, productId) => {
-  const entries = await StockLedger.find(withBranchScope({ companyId, productId }, branchId));
+const getLedgerAvailableStock = async (companyId, branchId, productId, branchIsDefault = false) => {
+  const entries = await StockLedger.find(withBranchScope({ companyId, productId }, branchId, branchIsDefault));
   let stock = 0;
   entries.forEach((entry) => {
     if (["PURCHASE", "OPENING", "SALE_RETURN", "TRANSFER_IN"].includes(entry.type)) {
@@ -15,9 +15,9 @@ const getLedgerAvailableStock = async (companyId, branchId, productId) => {
   return stock;
 };
 
-const computeLedgerAverageCost = async (companyId, branchId, productId, untilDate = new Date()) => {
+const computeLedgerAverageCost = async (companyId, branchId, productId, untilDate = new Date(), branchIsDefault = false) => {
   const entries = await StockLedger.find({
-    ...withBranchScope({ companyId, productId }, branchId),
+    ...withBranchScope({ companyId, productId }, branchId, branchIsDefault),
     type: { $in: ["PURCHASE", "OPENING", "PURCHASE_RETURN"] },
     createdAt: { $lte: untilDate },
   });
@@ -40,14 +40,14 @@ const computeLedgerAverageCost = async (companyId, branchId, productId, untilDat
   return totalQty > 0 ? totalValue / totalQty : 0;
 };
 
-const ensureLegacyBatch = async (companyId, branchId, productId, asOfDate = new Date()) => {
-  const existing = await StockBatch.exists(withBranchScope({ companyId, productId }, branchId));
+const ensureLegacyBatch = async (companyId, branchId, productId, asOfDate = new Date(), branchIsDefault = false) => {
+  const existing = await StockBatch.exists(withBranchScope({ companyId, productId }, branchId, branchIsDefault));
   if (existing) return;
 
-  const available = await getLedgerAvailableStock(companyId, branchId, productId);
+  const available = await getLedgerAvailableStock(companyId, branchId, productId, branchIsDefault);
   if (!(available > 0)) return;
 
-  const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate);
+  const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate, branchIsDefault);
   await StockBatch.create({
     companyId,
     branchId: branchId || null,
@@ -60,23 +60,23 @@ const ensureLegacyBatch = async (companyId, branchId, productId, asOfDate = new 
   });
 };
 
-const getBatchAvailableStock = async (companyId, branchId, productId) => {
+const getBatchAvailableStock = async (companyId, branchId, productId, branchIsDefault = false) => {
   const result = await StockBatch.aggregate([
-    { $match: withBranchScope({ companyId, productId }, branchId) },
+    { $match: withBranchScope({ companyId, productId }, branchId, branchIsDefault) },
     { $group: { _id: null, total: { $sum: "$remainingQty" }, count: { $sum: 1 } } },
   ]);
   if (!result.length) return { total: 0, count: 0 };
   return { total: Number(result[0].total || 0), count: Number(result[0].count || 0) };
 };
 
-const getAvailableStock = async (companyId, branchId, productId, asOfDate = new Date()) => {
-  const batch = await getBatchAvailableStock(companyId, branchId, productId);
-  const ledgerTotal = await getLedgerAvailableStock(companyId, branchId, productId);
+const getAvailableStock = async (companyId, branchId, productId, asOfDate = new Date(), branchIsDefault = false) => {
+  const batch = await getBatchAvailableStock(companyId, branchId, productId, branchIsDefault);
+  const ledgerTotal = await getLedgerAvailableStock(companyId, branchId, productId, branchIsDefault);
 
   if (batch.count > 0) {
     const diff = Number(ledgerTotal || 0) - Number(batch.total || 0);
     if (diff > 0) {
-      const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate);
+      const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate, branchIsDefault);
       await StockBatch.create({
         companyId,
         branchId: branchId || null,
@@ -106,10 +106,11 @@ const consumeBatches = async ({
   asOfDate = new Date(),
   sourceHint = "",
   allowNegative = false,
+  branchIsDefault = false,
 }) => {
-  await ensureLegacyBatch(companyId, branchId, productId, asOfDate);
+  await ensureLegacyBatch(companyId, branchId, productId, asOfDate, branchIsDefault);
   const batches = await StockBatch.find({
-    ...withBranchScope({ companyId, productId }, branchId),
+    ...withBranchScope({ companyId, productId }, branchId, branchIsDefault),
     remainingQty: { $gt: 0 },
   }).sort({ createdAt: 1, _id: 1 });
 
@@ -175,10 +176,10 @@ const consumeBatches = async ({
   };
 };
 
-const previewConsumeBatches = async ({ companyId, branchId, productId, quantity, asOfDate = new Date() }) => {
-  await ensureLegacyBatch(companyId, branchId, productId, asOfDate);
+const previewConsumeBatches = async ({ companyId, branchId, branchIsDefault = false, productId, quantity, asOfDate = new Date() }) => {
+  await ensureLegacyBatch(companyId, branchId, productId, asOfDate, branchIsDefault);
   const batches = await StockBatch.find({
-    ...withBranchScope({ companyId, productId }, branchId),
+    ...withBranchScope({ companyId, productId }, branchId, branchIsDefault),
     remainingQty: { $gt: 0 },
   }).sort({ createdAt: 1, _id: 1 });
 
@@ -236,10 +237,10 @@ const restoreBatchesFromBreakdown = async (companyId, branchId, breakdown = [], 
   }
 };
 
-const restoreByAverageCost = async (companyId, branchId, productId, quantity, asOfDate = new Date()) => {
+const restoreByAverageCost = async (companyId, branchId, productId, quantity, asOfDate = new Date(), branchIsDefault = false) => {
   const qty = Number(quantity || 0);
   if (!(qty > 0)) return;
-  const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate);
+  const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate, branchIsDefault);
   await StockBatch.create({
     companyId,
     branchId: branchId || null,
@@ -252,9 +253,9 @@ const restoreByAverageCost = async (companyId, branchId, productId, quantity, as
   });
 };
 
-const consumePurchaseBatches = async (companyId, branchId, productId, purchaseId, quantity) => {
+const consumePurchaseBatches = async (companyId, branchId, productId, purchaseId, quantity, branchIsDefault = false) => {
   const batches = await StockBatch.find({
-    ...withBranchScope({ companyId, productId }, branchId),
+    ...withBranchScope({ companyId, productId }, branchId, branchIsDefault),
     sourceType: "PURCHASE",
     sourceId: purchaseId,
     remainingQty: { $gt: 0 },

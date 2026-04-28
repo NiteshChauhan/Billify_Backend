@@ -10,8 +10,8 @@ const normalizeRole = (role = "") => {
   return value;
 };
 
-const buildOutstandingForRole = async ({ companyId, role, range }) =>
-  getRoleOutstandingRows({ companyId, role, range });
+const buildOutstandingForRole = async ({ companyId, role, range, branchId, branchIsDefault }) =>
+  getRoleOutstandingRows({ companyId, role, range, branchId, branchIsDefault });
 
 exports.getOutstandingByRole = async (req, res) => {
   try {
@@ -23,7 +23,13 @@ exports.getOutstandingByRole = async (req, res) => {
     }
 
     const range = getDateRangeFromQuery(req.query);
-    const data = await buildOutstandingForRole({ companyId, role, range });
+    const data = await buildOutstandingForRole({
+      companyId,
+      role,
+      range,
+      branchId: req.user.branchId,
+      branchIsDefault: req.user.branchIsDefault,
+    });
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -54,11 +60,15 @@ exports.getAllOutstanding = async (req, res) => {
       companyId,
       role: "supplier",
       range,
+      branchId: req.user.branchId,
+      branchIsDefault: req.user.branchIsDefault,
     });
     const customer = await buildOutstandingForRole({
       companyId,
       role: "customer",
       range,
+      branchId: req.user.branchId,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     const map = {};
@@ -100,6 +110,8 @@ exports.getAgeingByRole = async (req, res) => {
     const summaries = await getPartyBalanceSummaries({
       companyId,
       range: getDateRangeFromQuery(req.query),
+      branchId: req.user.branchId,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     const rows = summaries

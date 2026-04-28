@@ -6,6 +6,7 @@ const ReturnEntry = require("../models/Return");
 const Party = require("../models/Party");
 const mongoose = require("mongoose");
 const { getAvailableStock } = require("../utils/stockUtils");
+const { withBranchScope } = require("../utils/branchScope");
 const {
   assertOpeningStockEditable,
   syncOpeningStock,
@@ -36,6 +37,7 @@ exports.createProduct = async (req, res) => {
     /* ✅ SAVE FULL BODY (attributes, unit, gst, etc.) */
     const product = await Product.create({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       ...req.body,
       price: Number(price || 0),
       openingStock: Number(openingStock || 0),
@@ -51,6 +53,7 @@ exports.createProduct = async (req, res) => {
       quantity: openingStock,
       rate: openingRate,
       syncProductFields: false,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     res.json(product);
@@ -72,7 +75,11 @@ exports.getProducts = async (req, res) => {
     const page = pageParam > 0 ? pageParam : 1;
     const limit = limitParam > 0 ? Math.min(limitParam, 100) : 20;
     const { statusFilter, withDeleted } = buildProductStatusFilter(req.query.status);
-    const filter = { companyId, ...statusFilter };
+    const filter = withBranchScope(
+      { companyId, ...statusFilter },
+      req.user.branchId,
+      req.user.branchIsDefault,
+    );
 
     const [products, total] = await Promise.all([
       Product.find(filter)
@@ -86,7 +93,13 @@ exports.getProducts = async (req, res) => {
 
     const productRows = await Promise.all(
       products.map(async (product) => {
-        const currentStock = await getAvailableStock(companyId, req.user.branchId || null, product._id);
+        const currentStock = await getAvailableStock(
+          companyId,
+          req.user.branchId || null,
+          product._id,
+          new Date(),
+          req.user.branchIsDefault,
+        );
         return {
           ...product,
           stock: Number(currentStock || 0),
@@ -118,10 +131,16 @@ exports.getProducts = async (req, res) => {
 /* ================= GET SINGLE PRODUCT ================= */
 exports.getProductById = async (req, res) => {
   try {
-    const product = await Product.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId
-    }).setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" });
+    const product = await Product.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    ).setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" });
 
     if (!product) {
       return res.status(404).json({
@@ -142,7 +161,9 @@ exports.updateProduct = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const productId = req.params.id;
-    const existing = await Product.findOne({ _id: productId, companyId });
+    const existing = await Product.findOne(
+      withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
 
     if (!existing) {
       return res.status(404).json({
@@ -168,6 +189,7 @@ exports.updateProduct = async (req, res) => {
         productId,
         incomingOpeningStock,
         incomingOpeningRate,
+        req.user.branchIsDefault,
       );
     }
 
@@ -181,7 +203,7 @@ exports.updateProduct = async (req, res) => {
     delete updateData.openingRate;
 
     const product = await Product.findOneAndUpdate(
-      { _id: productId, companyId },
+      withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
       updateData,
       { new: true }
     );
@@ -198,8 +220,11 @@ exports.updateProduct = async (req, res) => {
       productId,
       quantity: incomingOpeningStock,
       rate: incomingOpeningRate,
+      branchIsDefault: req.user.branchIsDefault,
     });
-    const updatedProduct = await Product.findOne({ _id: productId, companyId });
+    const updatedProduct = await Product.findOne(
+      withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
     res.json(updatedProduct || product);
   } catch (err) {
     res.status(err.status || 500).json({
@@ -212,10 +237,13 @@ exports.updateProduct = async (req, res) => {
 /* ================= DELETE PRODUCT ================= */
 exports.deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-    });
+    const product = await Product.findOne(
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
@@ -250,11 +278,13 @@ exports.deleteProduct = async (req, res) => {
 
 exports.restoreProduct = async (req, res) => {
   try {
-    const product = await Product.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      isDeleted: true,
-    }).setOptions({ withDeleted: true });
+    const product = await Product.findOne(
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId, isDeleted: true },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    ).setOptions({ withDeleted: true });
 
     if (!product) {
       return res.status(404).json({ message: "Deleted product not found" });
@@ -292,11 +322,17 @@ exports.getLastRate = async (req, res) => {
     }
 
     const InvoiceModel = normalizedType === "sale" ? SalesInvoice : PurchaseInvoice;
-    const invoice = await InvoiceModel.findOne({
-      companyId: req.user.companyId,
-      partyId,
-      "items.productId": productId,
-    })
+    const invoice = await InvoiceModel.findOne(
+      withBranchScope(
+        {
+          companyId: req.user.companyId,
+          partyId,
+          "items.productId": productId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    )
       .sort({ invoiceDate: -1, createdAt: -1 })
       .select("items invoiceDate");
 
@@ -320,9 +356,11 @@ exports.getCapitalSummary = async (req, res) => {
   try {
     const companyId = new mongoose.Types.ObjectId(String(req.user.companyId));
     const [productsCount, stockSummary] = await Promise.all([
-      Product.countDocuments({ companyId }),
+      Product.countDocuments(
+        withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
+      ),
       StockLedger.aggregate([
-        { $match: { companyId } },
+        { $match: withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault) },
         {
           $group: {
             _id: "$productId",
@@ -378,7 +416,9 @@ exports.getCapitalSummary = async (req, res) => {
       ]),
     ]);
 
-    const firstProduct = await Product.findOne({ companyId }).select("name price openingStock").lean();
+    const firstProduct = await Product.findOne(
+      withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
+    ).select("name price openingStock").lean();
     if (process.env.NODE_ENV !== "production") {
       console.log("Capital summary debug:", firstProduct, {
         priceType: typeof firstProduct?.price,
@@ -441,7 +481,7 @@ exports.bulkUploadProducts = async (req, res) => {
       }
 
       const existing = await Product.findOne({
-        companyId: req.user.companyId,
+        ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
         name,
       }).select("_id");
 
@@ -453,6 +493,7 @@ exports.bulkUploadProducts = async (req, res) => {
       try {
         const product = await Product.create({
           companyId: req.user.companyId,
+          branchId: req.user.branchId || null,
           name,
           sku: `CSV-${Date.now()}-${index}`,
           price,
@@ -469,6 +510,7 @@ exports.bulkUploadProducts = async (req, res) => {
           quantity: stock,
           rate: price,
           syncProductFields: false,
+          branchIsDefault: req.user.branchIsDefault,
         });
 
         insertedCount += 1;
@@ -494,18 +536,22 @@ exports.getProductHistory = async (req, res) => {
     const companyId = req.user.companyId;
     const productId = req.params.id;
 
-    const product = await Product.findOne({ _id: productId, companyId });
+    const product = await Product.findOne(
+      withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    const ledger = await StockLedger.find({ companyId, productId }).sort({ createdAt: 1 }).lean();
+    const ledger = await StockLedger.find(
+      withBranchScope({ companyId, productId }, req.user.branchId, req.user.branchIsDefault),
+    ).sort({ createdAt: 1 }).lean();
     const referenceIds = [...new Set(ledger.map((row) => String(row.referenceId)).filter(Boolean))];
 
     const [sales, purchases, returns] = await Promise.all([
-      SalesInvoice.find({ companyId, _id: { $in: referenceIds } }).select("_id invoiceNo partyId"),
-      PurchaseInvoice.find({ companyId, _id: { $in: referenceIds } }).select("_id invoiceNo partyId"),
-      ReturnEntry.find({ companyId, billId: { $in: referenceIds } }).select("billId returnType partyId"),
+      SalesInvoice.find(withBranchScope({ companyId, _id: { $in: referenceIds } }, req.user.branchId, req.user.branchIsDefault)).select("_id invoiceNo partyId"),
+      PurchaseInvoice.find(withBranchScope({ companyId, _id: { $in: referenceIds } }, req.user.branchId, req.user.branchIsDefault)).select("_id invoiceNo partyId"),
+      ReturnEntry.find(withBranchScope({ companyId, billId: { $in: referenceIds } }, req.user.branchId, req.user.branchIsDefault)).select("billId returnType partyId"),
     ]);
 
     const partyIds = [
@@ -572,7 +618,13 @@ exports.getProductHistory = async (req, res) => {
       };
     });
 
-    const currentStock = await getAvailableStock(companyId, req.user.branchId || null, productId);
+    const currentStock = await getAvailableStock(
+      companyId,
+      req.user.branchId || null,
+      productId,
+      new Date(),
+      req.user.branchIsDefault,
+    );
 
     res.json({
       product,

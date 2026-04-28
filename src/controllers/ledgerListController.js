@@ -7,6 +7,7 @@ const Expense = require("../models/Expense");
 const BankAccount = require("../models/BankAccount");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { getPartyBalanceSummaries } = require("../utils/partyBalanceSummary");
+const { withBranchScope } = require("../utils/branchScope");
 
 const normalizePaymentType = (v) => {
   const t = String(v || "credit").toLowerCase();
@@ -42,18 +43,26 @@ exports.getLedgerList = async (req, res) => {
     const range = getDateRangeFromQuery(req.query);
 
     const [partySummaries, parties, purchases, sales, payments, returns, bankAccounts] = await Promise.all([
-      getPartyBalanceSummaries({ companyId, range }),
-      Party.find({ companyId, isActive: true }).select("name roles"),
-      PurchaseInvoice.find({ companyId, ...invoiceDateQuery }).select(
+      getPartyBalanceSummaries({
+        companyId,
+        range,
+        branchId: req.user.branchId,
+        branchIsDefault: req.user.branchIsDefault,
+      }),
+      Party.find({
+        ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
+        isActive: true,
+      }).select("name roles"),
+      PurchaseInvoice.find({ ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault), ...invoiceDateQuery }).select(
         "partyId totalAmount paidAmount paymentType invoiceNo bankAccountId _id",
       ),
-      SalesInvoice.find({ companyId, ...invoiceDateQuery }).select(
+      SalesInvoice.find({ ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault), ...invoiceDateQuery }).select(
         "partyId totalAmount paidAmount paymentType invoiceNo bankAccountId _id",
       ),
-      Payment.find({ companyId, ...paymentDateQuery }).select(
+      Payment.find({ ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault), ...paymentDateQuery }).select(
         "partyId amount paymentType invoiceType invoiceId paymentMode bankAccountId _id",
       ),
-      ReturnEntry.find({ companyId, ...returnDateQuery }).select(
+      ReturnEntry.find({ ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault), ...returnDateQuery }).select(
         "partyId returnType totalAmount billType billId returnNo _id",
       ),
       BankAccount.find({ companyId }).select("accountName"),
@@ -225,7 +234,7 @@ exports.getLedgerList = async (req, res) => {
     });
 
     const expenses = await Expense.find({
-      companyId,
+      ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
       ...(returnDateQuery.returnDate ? { date: returnDateQuery.returnDate } : {}),
       paymentType: { $in: ["cash", "bank"] },
     }).select("amount paymentType bankAccountId");
@@ -387,31 +396,31 @@ exports.getLedgerTransactions = async (req, res) => {
 
     const [purchases, sales, payments, returns, expenses] = await Promise.all([
       PurchaseInvoice.find({
-        companyId,
+        ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
         ...invoiceDateQuery,
         ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
       }).select(
         "invoiceDate totalAmount invoiceNo paymentType partyId bankAccountId _id",
       ),
       SalesInvoice.find({
-        companyId,
+        ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
         ...invoiceDateQuery,
         ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
       }).select(
         "invoiceDate totalAmount invoiceNo paymentType partyId bankAccountId _id",
       ),
       Payment.find({
-        companyId,
+        ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
         ...paymentDateQuery,
         ...(filterType === "bank" && bankAccountId ? { bankAccountId } : {}),
       }).select(
         "paymentDate amount paymentMode paymentType invoiceType invoiceId partyId bankAccountId adjustType _id",
       ),
-      ReturnEntry.find({ companyId, ...returnDateQuery }).select(
+      ReturnEntry.find({ ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault), ...returnDateQuery }).select(
         "returnDate returnType totalAmount billType billId returnNo partyId _id",
       ),
       Expense.find({
-        companyId,
+        ...withBranchScope({ companyId }, req.user.branchId, req.user.branchIsDefault),
         ...expenseDateQuery,
         ...(filterType === "bank" && bankAccountId ? { paymentType: "bank", bankAccountId } : {}),
       }).select("date title amount paymentType note partyId bankAccountId _id"),

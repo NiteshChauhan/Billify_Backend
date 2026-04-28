@@ -7,7 +7,13 @@ exports.getProductStock = async (req, res) => {
   try {
     const { productId } = req.params;
 
-    const stock = await getAvailableStock(req.user.companyId, req.user.branchId || null, productId);
+    const stock = await getAvailableStock(
+      req.user.companyId,
+      req.user.branchId || null,
+      productId,
+      new Date(),
+      req.user.branchIsDefault,
+    );
 
     res.json({ productId, stock });
   } catch (err) {

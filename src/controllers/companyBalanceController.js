@@ -1,4 +1,5 @@
 const CompanyBalance = require("../models/CompanyBalance");
+const { withBranchScope } = require("../utils/branchScope");
 
 const startOfDay = (value) => {
   const date = new Date(value);
@@ -14,8 +15,7 @@ exports.getCompanyBalance = async (req, res) => {
     }
 
     const record = await CompanyBalance.findOne({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       date: startOfDay(date),
     });
 
