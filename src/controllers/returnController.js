@@ -7,6 +7,7 @@ const Product = require("../models/Product");
 const Payment = require("../models/Payment");
 const StockBatch = require("../models/StockBatch");
 const BankAccount = require("../models/BankAccount");
+const { logAudit } = require("../utils/auditLog");
 const {
   getAvailableStock,
   restoreBatchesFromBreakdown,
@@ -24,7 +25,108 @@ const normalizeReturnType = (value = "") => {
 };
 
 const getBillModelByReturnType = (returnType) =>
-  returnType === "PURCHASE_RETURN" ? PurchaseInvoice : SalesInvoice;
+  (returnType === "PURCHASE_RETURN" ? PurchaseInvoice : SalesInvoice);
+
+const loadReplacementBillDetails = async (companyId, entry, branchId, branchIsDefault = false) => {
+  if (!entry?.replacementBillId || !entry?.replacementBillType) {
+    return [];
+  }
+
+  const BillModel = entry.replacementBillType === "PURCHASE" ? PurchaseInvoice : SalesInvoice;
+  const replacementBill = await BillModel.findOne(
+    withBranchScope(
+      {
+        _id: entry.replacementBillId,
+        companyId,
+      },
+      branchId,
+      branchIsDefault,
+    ),
+  )
+    .setOptions({ withDeleted: true })
+    .populate("partyId", "name")
+    .select("_id invoiceNo invoiceDate totalAmount status partyId isDeleted");
+
+  if (!replacementBill) {
+    return [];
+  }
+
+  return [
+    {
+      id: replacementBill._id,
+      billNo: replacementBill.invoiceNo || "",
+      invoiceNo: replacementBill.invoiceNo || "",
+      date: replacementBill.invoiceDate || null,
+      customerName: replacementBill.partyId?.name || "",
+      totalAmount: Number(replacementBill.totalAmount || 0),
+      status: replacementBill.isDeleted ? "DELETED" : replacementBill.status || "ACTIVE",
+      billType: entry.replacementBillType,
+      linkedReturnId: entry._id,
+      linkedReturnNo: entry.returnNo || "",
+    },
+  ];
+};
+
+const attachReplacementBillMeta = async (entries = [], companyId, branchId, branchIsDefault = false) => {
+  const saleIds = [...new Set(
+    entries
+      .filter((entry) => entry.replacementBillId && entry.replacementBillType === "SALE")
+      .map((entry) => String(entry.replacementBillId)),
+  )];
+  const purchaseIds = [...new Set(
+    entries
+      .filter((entry) => entry.replacementBillId && entry.replacementBillType === "PURCHASE")
+      .map((entry) => String(entry.replacementBillId)),
+  )];
+
+  const [sales, purchases] = await Promise.all([
+    saleIds.length
+      ? SalesInvoice.find(
+          withBranchScope({ companyId, _id: { $in: saleIds } }, branchId, branchIsDefault),
+        )
+          .setOptions({ withDeleted: true })
+          .populate("partyId", "name")
+          .select("_id invoiceNo invoiceDate totalAmount status partyId isDeleted")
+      : [],
+    purchaseIds.length
+      ? PurchaseInvoice.find(
+          withBranchScope({ companyId, _id: { $in: purchaseIds } }, branchId, branchIsDefault),
+        )
+          .setOptions({ withDeleted: true })
+          .populate("partyId", "name")
+          .select("_id invoiceNo invoiceDate totalAmount status partyId isDeleted")
+      : [],
+  ]);
+
+  const saleMap = new Map(sales.map((bill) => [String(bill._id), bill]));
+  const purchaseMap = new Map(purchases.map((bill) => [String(bill._id), bill]));
+
+  return entries.map((entry) => {
+    const raw = typeof entry.toObject === "function" ? entry.toObject() : { ...entry };
+    const linkedBill =
+      raw.replacementBillType === "PURCHASE"
+        ? purchaseMap.get(String(raw.replacementBillId))
+        : saleMap.get(String(raw.replacementBillId));
+
+    return {
+      ...raw,
+      replacementBills: linkedBill
+        ? [
+            {
+              id: linkedBill._id,
+              billNo: linkedBill.invoiceNo || "",
+              invoiceNo: linkedBill.invoiceNo || "",
+              date: linkedBill.invoiceDate || null,
+              customerName: linkedBill.partyId?.name || "",
+              totalAmount: Number(linkedBill.totalAmount || 0),
+              status: linkedBill.isDeleted ? "DELETED" : linkedBill.status || "ACTIVE",
+              billType: raw.replacementBillType,
+            },
+          ]
+        : [],
+    };
+  });
+};
 
 const consumeSpecificBatchBreakdown = async (companyId, breakdown = [], quantity) => {
   let remaining = Number(quantity || 0);
@@ -823,7 +925,14 @@ exports.getReturns = async (req, res) => {
     .populate("items.productId", "name")
     .sort({ returnDate: -1, createdAt: -1 });
 
-  res.json(data);
+  const rows = await attachReplacementBillMeta(
+    data,
+    req.user.companyId,
+    req.user.branchId,
+    req.user.branchIsDefault,
+  );
+
+  res.json(rows);
 };
 
 exports.deleteReturn = async (req, res) => {
@@ -841,8 +950,17 @@ exports.deleteReturn = async (req, res) => {
     }
 
     if (entry.replacementBillId) {
+      const replacementBills = await loadReplacementBillDetails(
+        req.user.companyId,
+        entry,
+        req.user.branchId,
+        req.user.branchIsDefault,
+      );
       return res.status(400).json({
+        success: false,
+        code: "REPLACEMENT_BILL_EXISTS",
         message: "Delete linked replacement bill first before deleting this return",
+        replacementBills,
       });
     }
 
@@ -934,6 +1052,24 @@ exports.deleteReturn = async (req, res) => {
     entry.deletedAt = new Date();
     entry.deletedBy = req.user._id || null;
     await entry.save();
+
+    await logAudit({
+      companyId: req.user.companyId,
+      userId: req.user._id || null,
+      actionType: "DELETE",
+      module: entry.returnType,
+      entityId: entry._id,
+      description: `Deleted ${entry.returnType === "SALE_RETURN" ? "sale" : "purchase"} return ${entry.returnNo || entry._id}`,
+      details: {
+        apiName: "DELETE /api/returns/:id",
+        branchId: req.user.branchId || null,
+        returnId: entry._id,
+        returnNo: entry.returnNo || "",
+        returnType: entry.returnType,
+        billId: entry.billId,
+        totalAmount: Number(entry.totalAmount || 0),
+      },
+    });
 
     res.json({ message: "Return entry deleted successfully" });
   } catch (err) {
