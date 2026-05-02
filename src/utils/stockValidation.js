@@ -2,7 +2,7 @@ const Company = require("../models/Company");
 const Product = require("../models/Product");
 const { getAvailableStock } = require("./stockUtils");
 
-exports.validateStockForSale = async (companyId, branchId, items) => {
+exports.validateStockForSale = async (companyId, branchId, items, branchIsDefault = false) => {
   const company = await Company.findById(companyId).select("stockSettlementEnabled");
   const stockSettlementEnabled = Boolean(company?.stockSettlementEnabled);
 
@@ -18,7 +18,7 @@ exports.validateStockForSale = async (companyId, branchId, items) => {
   const productMap = new Map(products.map((product) => [String(product._id), product]));
 
   for (const item of items) {
-    const available = await getAvailableStock(companyId, branchId, item.productId);
+    const available = await getAvailableStock(companyId, branchId, item.productId, new Date(), branchIsDefault);
     if (available < item.quantity) {
       const error = new Error("Insufficient stock");
       error.code = "INSUFFICIENT_STOCK";

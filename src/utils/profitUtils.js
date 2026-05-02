@@ -8,9 +8,75 @@ const { withBranchScope } = require("./branchScope");
 
 const round2 = (value) => Number(Number(value || 0).toFixed(2));
 
-const computeEntryCost = async (companyId, branchId, saleEntry) => {
+const getProductId = (value) => {
+  if (!value) return null;
+  return String(value._id || value);
+};
+
+const getProductCurrentCost = (product, fallback = 0) => {
+  const openingRate = Number(product?.openingRate || 0);
+  if (openingRate > 0) return openingRate;
+  const lastPurchaseRate = Number(product?.lastPurchaseRate || 0);
+  if (lastPurchaseRate > 0) return lastPurchaseRate;
+  return Number(fallback || 0);
+};
+
+const getSavedUnitCost = (item = {}) => {
+  const quantity = Number(item.quantity || 0);
+  const costFromBreakdown = Array.isArray(item.costBreakdown)
+    ? item.costBreakdown.reduce((sum, row) => sum + Number(row.cost || 0), 0)
+    : 0;
+  const savedCost = Number(item.actualCost || costFromBreakdown || 0);
+  return quantity > 0 ? savedCost / quantity : 0;
+};
+
+const collectInvoiceProductIds = (invoices = []) => {
+  const ids = new Set();
+  invoices.forEach((invoice) => {
+    (invoice.items || []).forEach((item) => {
+      const productId = getProductId(item.productId);
+      if (productId) ids.add(productId);
+    });
+  });
+  return ids;
+};
+
+const collectReturnProductIds = (returns = []) => {
+  const ids = new Set();
+  returns.forEach((entry) => {
+    (entry.items || []).forEach((item) => {
+      const productId = getProductId(item.productId);
+      if (productId) ids.add(productId);
+    });
+  });
+  return ids;
+};
+
+const loadCurrentProductCostMap = async (companyId, branchId, productIds = [], branchIsDefault = false) => {
+  const ids = [...new Set([...productIds].filter(Boolean))];
+  if (!ids.length) {
+    return new Map();
+  }
+
+  const products = await Product.find(
+    withBranchScope({ companyId, _id: { $in: ids } }, branchId, branchIsDefault),
+  ).select("_id name openingRate lastPurchaseRate");
+
+  return new Map(
+    products.map((product) => [
+      String(product._id),
+      {
+        name: product.name,
+        lastPurchaseRate: product.lastPurchaseRate,
+        openingRate: product.openingRate,
+      },
+    ]),
+  );
+};
+
+const computeEntryCost = async (companyId, branchId, saleEntry, branchIsDefault = false) => {
   const stockEntries = await StockLedger.find({
-    ...withBranchScope({ companyId, productId: saleEntry.productId }, branchId),
+    ...withBranchScope({ companyId, productId: saleEntry.productId }, branchId, branchIsDefault),
     type: { $in: ["PURCHASE", "OPENING", "PURCHASE_RETURN"] },
     createdAt: { $lte: saleEntry.createdAt },
   });
@@ -33,7 +99,13 @@ const computeEntryCost = async (companyId, branchId, saleEntry) => {
   return totalQty > 0 ? totalValue / totalQty : 0;
 };
 
-const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
+const buildSaleInvoiceMetrics = async (
+  companyId,
+  branchId,
+  invoices = [],
+  branchIsDefault = false,
+  productCostMap = new Map(),
+) => {
   if (!invoices.length) {
     return new Map();
   }
@@ -66,16 +138,17 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
       const quantity = Number(item.quantity || 0);
       const saleRate = Number(item.rate || 0);
       const amount = Number(item.amount || quantity * saleRate);
-      const costFromBreakdown = Array.isArray(item.costBreakdown)
-        ? item.costBreakdown.reduce((sum, row) => sum + Number(row.cost || 0), 0)
-        : 0;
-      const actualCost = Number(item.actualCost || costFromBreakdown || 0);
+      const productId = getProductId(item.productId);
+      const currentProduct = productId ? productCostMap.get(productId) : null;
+      const unitCost = currentProduct
+        ? getProductCurrentCost(currentProduct, getSavedUnitCost(item))
+        : getSavedUnitCost(item);
 
       current.saleAmount += amount;
-      current.costAmount += actualCost;
+      current.costAmount += quantity * unitCost;
       current.quantity += quantity;
 
-      const productName = item.productId?.name;
+      const productName = currentProduct?.name || item.productId?.name;
       if (productName) {
         current.productNames.add(productName);
       }
@@ -89,19 +162,32 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
   }
 
   const saleEntries = await StockLedger.find({
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchId, branchIsDefault),
     type: "SALE",
     referenceId: { $in: legacyInvoiceIds },
   }).sort({ createdAt: 1 });
 
   const productIds = [...new Set(saleEntries.map((entry) => String(entry.productId)).filter(Boolean))];
   const products = productIds.length
-    ? await Product.find({ companyId, _id: { $in: productIds } }).select("_id name")
+    ? await Product.find(withBranchScope({ companyId, _id: { $in: productIds } }, branchId, branchIsDefault))
+        .select("_id name openingRate lastPurchaseRate")
     : [];
-  const productMap = new Map(products.map((product) => [String(product._id), product.name]));
+  const productMap = new Map(
+    products.map((product) => [
+      String(product._id),
+      {
+        name: product.name,
+        lastPurchaseRate: product.lastPurchaseRate,
+        openingRate: product.openingRate,
+      },
+    ]),
+  );
 
   for (const entry of saleEntries) {
-    const avgCost = await computeEntryCost(companyId, branchId, entry);
+    const productInfo = productMap.get(String(entry.productId));
+    const avgCost = productInfo
+      ? getProductCurrentCost(productInfo)
+      : await computeEntryCost(companyId, branchId, entry, branchIsDefault);
     const invoiceId = String(entry.referenceId);
     const current = invoiceMetrics.get(invoiceId) || {
       saleAmount: 0,
@@ -115,7 +201,7 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
     current.saleAmount += quantity * saleRate;
     current.costAmount += quantity * avgCost;
     current.quantity += quantity;
-    const productName = productMap.get(String(entry.productId));
+    const productName = productInfo?.name;
     if (productName) {
       current.productNames.add(productName);
     }
@@ -126,7 +212,7 @@ const buildSaleInvoiceMetrics = async (companyId, branchId, invoices = []) => {
   return invoiceMetrics;
 };
 
-const computeReturnItemCost = async (companyId, branchId, saleItem, returnQty, returnDate) => {
+const computeReturnItemCost = async (companyId, branchId, saleItem, returnQty, returnDate, branchIsDefault = false) => {
   const qty = Number(returnQty || 0);
   if (!(qty > 0)) return 0;
   const breakdown = Array.isArray(saleItem.costBreakdown) ? saleItem.costBreakdown : [];
@@ -152,27 +238,28 @@ const computeReturnItemCost = async (companyId, branchId, saleItem, returnQty, r
     return Number(((actualCost / soldQty) * qty).toFixed(4));
   }
 
-  const avgRate = await computeLedgerAverageCost(companyId, branchId, saleItem.productId, returnDate || new Date());
+  const avgRate = await computeLedgerAverageCost(companyId, branchId, saleItem.productId, returnDate || new Date(), branchIsDefault);
   return Number((avgRate * qty).toFixed(4));
 };
 
 exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, options = {}) => {
   const { includeEntries = false } = options;
+  const branchIsDefault = Boolean(options.branchIsDefault);
 
   const paidSales = await SalesInvoice.find({
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchId, branchIsDefault),
     status: "PAID",
   })
     .populate("partyId", "name")
-    .populate("items.productId", "name")
+    .populate("items.productId", "name openingRate lastPurchaseRate")
     .select("_id invoiceNo invoiceDate totalAmount paidAmount paymentType partyId items");
 
   const invoiceIds = paidSales.map((invoice) => invoice._id);
-  const saleMetricsMap = await buildSaleInvoiceMetrics(companyId, branchId, paidSales);
+  const invoiceProductIds = collectInvoiceProductIds(paidSales);
 
   const payments = invoiceIds.length
       ? await Payment.find({
-        ...withBranchScope({ companyId }, branchId),
+        ...withBranchScope({ companyId }, branchId, branchIsDefault),
         invoiceType: "SALE",
         invoiceId: { $in: invoiceIds },
         paymentType: "RECEIVED",
@@ -192,6 +279,30 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, 
   let totalCost = 0;
   const dailyMap = {};
   const entries = [];
+
+  const paidSalesMap = new Map(paidSales.map((invoice) => [String(invoice._id), invoice]));
+  const saleReturns = await ReturnEntry.find({
+    ...withBranchScope({ companyId }, branchId, branchIsDefault),
+    returnType: "SALE_RETURN",
+    returnDate: { $gte: fromDate, $lte: toDate },
+  })
+    .populate("partyId", "name")
+    .populate("items.productId", "name openingRate lastPurchaseRate");
+
+  const returnProductIds = collectReturnProductIds(saleReturns);
+  const productCostMap = await loadCurrentProductCostMap(
+    companyId,
+    branchId,
+    new Set([...invoiceProductIds, ...returnProductIds]),
+    branchIsDefault,
+  );
+  const saleMetricsMap = await buildSaleInvoiceMetrics(
+    companyId,
+    branchId,
+    paidSales,
+    branchIsDefault,
+    productCostMap,
+  );
 
   for (const invoice of paidSales) {
     const invoiceKey = String(invoice._id);
@@ -245,15 +356,6 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, 
     }
   }
 
-  const paidSalesMap = new Map(paidSales.map((invoice) => [String(invoice._id), invoice]));
-  const saleReturns = await ReturnEntry.find({
-    ...withBranchScope({ companyId }, branchId),
-    returnType: "SALE_RETURN",
-    returnDate: { $gte: fromDate, $lte: toDate },
-  })
-    .populate("partyId", "name")
-    .populate("items.productId", "name");
-
   for (const ret of saleReturns) {
     const saleInvoice = paidSalesMap.get(String(ret.billId));
     if (!saleInvoice) {
@@ -274,14 +376,19 @@ exports.getProfitSummary = async (companyId, fromDate, toDate, branchId = null, 
       const saleItem = (saleInvoice.items || []).find(
         (row) => String(row.productId?._id || row.productId) === String(item.productId?._id || item.productId),
       );
-      if (saleItem) {
-        returnCostAmount += await computeReturnItemCost(companyId, branchId, saleItem, qty, ret.returnDate);
+      const productId = getProductId(item.productId);
+      const currentProduct = productId ? productCostMap.get(productId) : null;
+      if (currentProduct) {
+        const fallbackUnitCost = saleItem ? getSavedUnitCost(saleItem) : 0;
+        returnCostAmount += getProductCurrentCost(currentProduct, fallbackUnitCost) * qty;
+      } else if (saleItem) {
+        returnCostAmount += await computeReturnItemCost(companyId, branchId, saleItem, qty, ret.returnDate, branchIsDefault);
       } else {
-        const avgRate = await computeLedgerAverageCost(companyId, branchId, item.productId, ret.returnDate);
+        const avgRate = await computeLedgerAverageCost(companyId, branchId, item.productId, ret.returnDate, branchIsDefault);
         returnCostAmount += avgRate * qty;
       }
 
-      const productName = item.productId?.name;
+      const productName = currentProduct?.name || item.productId?.name;
       if (productName) {
         productNames.add(productName);
       }

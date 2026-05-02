@@ -1,6 +1,7 @@
 const Payment = require("../models/Payment");
 const Party = require("../models/Party");
 const SalesInvoice = require("../models/SalesInvoice");
+const { withBranchScope } = require("../utils/branchScope");
 
 exports.createReceipt = async (req, res) => {
   try {
@@ -11,10 +12,16 @@ exports.createReceipt = async (req, res) => {
       return res.status(400).json({ error: "Invalid receipt amount" });
     }
 
-    const invoice = await SalesInvoice.findOne({
-      _id: invoiceId,
-      companyId: req.user.companyId,
-    });
+    const invoice = await SalesInvoice.findOne(
+      withBranchScope(
+        {
+          _id: invoiceId,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     if (!invoice) {
       return res.status(404).json({ error: "Invoice not found" });
@@ -25,11 +32,17 @@ exports.createReceipt = async (req, res) => {
       return res.status(400).json({ error: "partyId is required" });
     }
 
-    const payments = await Payment.find({
-      companyId: req.user.companyId,
-      invoiceType: "SALE",
-      invoiceId,
-    });
+    const payments = await Payment.find(
+      withBranchScope(
+        {
+          companyId: req.user.companyId,
+          invoiceType: "SALE",
+          invoiceId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
 
     const alreadyPaid = payments.reduce((t, p) => t + p.amount, 0);
 
@@ -43,6 +56,7 @@ exports.createReceipt = async (req, res) => {
 
     const receipt = await Payment.create({
       companyId: req.user.companyId,
+      branchId: req.user.branchId || null,
       partyId,
       invoiceType: "SALE",
       invoiceId,

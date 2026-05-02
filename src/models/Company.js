@@ -8,6 +8,7 @@ const companySchema = new mongoose.Schema({
   whatsapp: String,
   email: String,
   gstNumber: String,
+  gstEnabled: { type: Boolean, default: true },
   address: String,
   addressAr: String,
   currencySymbol: { type: String, default: "Rs" },

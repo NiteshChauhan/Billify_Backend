@@ -15,25 +15,29 @@ exports.getDashboardSummary = async (req, res) => {
       ? { invoiceDate: { $gte: range.fromDate, $lte: range.toDate } }
       : {};
 
+    const salesMatch = withBranchScope({ companyId: companyObjectId, ...invoiceDateFilter }, req.user.branchId, req.user.branchIsDefault);
+    const purchaseMatch = withBranchScope({ companyId: companyObjectId, ...invoiceDateFilter }, req.user.branchId, req.user.branchIsDefault);
+    const paymentMatch = withBranchScope(
+      {
+        companyId: companyObjectId,
+        invoiceType: "SALE",
+        ...(range ? { paymentDate: { $gte: range.fromDate, $lte: range.toDate } } : {}),
+      },
+      req.user.branchId,
+      req.user.branchIsDefault,
+    );
+
     const [salesAgg, purchaseAgg, paymentAgg, totalProducts] = await Promise.all([
       SalesInvoice.aggregate([
-        { $match: withBranchScope({ companyId: companyObjectId, ...invoiceDateFilter }, branchScope) },
+        { $match: salesMatch },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
       ]),
       PurchaseInvoice.aggregate([
-        { $match: withBranchScope({ companyId: companyObjectId, ...invoiceDateFilter }, branchScope) },
+        { $match: purchaseMatch },
         { $group: { _id: null, total: { $sum: "$totalAmount" } } },
       ]),
       Payment.aggregate([
-        {
-          $match: withBranchScope({
-            companyId: companyObjectId,
-            invoiceType: "SALE",
-            ...(range
-              ? { paymentDate: { $gte: range.fromDate, $lte: range.toDate } }
-              : {}),
-          }, branchScope),
-        },
+        { $match: paymentMatch },
         { $group: { _id: null, total: { $sum: "$amount" } } },
       ]),
       Product.countDocuments({ companyId: companyObjectId }),
@@ -44,7 +48,7 @@ exports.getDashboardSummary = async (req, res) => {
     const end = new Date(`${year}-12-31T23:59:59.999Z`);
 
     const buildMonthlyPipeline = () => [
-      { $match: withBranchScope({ companyId: companyObjectId }, branchScope) },
+      { $match: withBranchScope({ companyId: companyObjectId }, req.user.branchId, req.user.branchIsDefault) },
       {
         $addFields: {
           chartDate: {

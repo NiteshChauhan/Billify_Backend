@@ -76,7 +76,8 @@ exports.getExpenses = async (req, res) => {
         companyId: req.user.companyId,
         ...(status === "deleted" ? { isDeleted: true } : {}),
       },
-      req.user.branchScope || req.user.branchId || null,
+      req.user.branchId,
+      req.user.branchIsDefault,
     );
     const withDeleted = status === "deleted" || status === "all";
     if (req.query.date) {
@@ -133,7 +134,8 @@ exports.updateExpense = async (req, res) => {
     const expense = await Expense.findOneAndUpdate(
       withBranchScope(
         { _id: req.params.id, companyId: req.user.companyId },
-        req.user.branchScope || req.user.branchId || null,
+        req.user.branchId,
+        req.user.branchIsDefault,
       ),
       {
         date: startOfDay(date),
@@ -161,7 +163,8 @@ exports.deleteExpense = async (req, res) => {
     const expense = await Expense.findOne(
       withBranchScope(
         { _id: req.params.id, companyId: req.user.companyId },
-        req.user.branchScope || req.user.branchId || null,
+        req.user.branchId,
+        req.user.branchIsDefault,
       ),
     );
 
@@ -184,12 +187,9 @@ exports.restoreExpense = async (req, res) => {
   try {
     const expense = await Expense.findOne(
       withBranchScope(
-        {
-          _id: req.params.id,
-          companyId: req.user.companyId,
-          isDeleted: true,
-        },
-        req.user.branchScope || req.user.branchId || null,
+        { _id: req.params.id, companyId: req.user.companyId, isDeleted: true },
+        req.user.branchId,
+        req.user.branchIsDefault,
       ),
     ).setOptions({ withDeleted: true });
 

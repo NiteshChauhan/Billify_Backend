@@ -8,6 +8,8 @@ const Product = require("../models/Product");
 const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { withBranchScope } = require("../utils/branchScope");
+const { getCompanyGstEnabled } = require("../utils/companySettings");
+const { calculateInvoiceTotals } = require("../utils/invoiceTotals");
 
 const toPurchaseResponse = (invoiceDoc) => {
   const invoice = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
@@ -65,8 +67,7 @@ exports.createPurchaseInvoice = async (req, res) => {
     let party = null;
     if (partyId) {
       party = await Party.findOne({
-        _id: partyId,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: partyId, companyId: req.user.companyId }, branchId, req.user.branchIsDefault),
         roles: "supplier",
       });
 
@@ -77,16 +78,16 @@ exports.createPurchaseInvoice = async (req, res) => {
       }
     }
 
-    let subtotal = 0;
+    const gstEnabled = await getCompanyGstEnabled(req.user.companyId);
     items.forEach((i) => {
       if (!i.productId || !i.quantity || !i.rate) {
         throw new Error("Invalid item data");
       }
-      i.amount = i.quantity * i.rate;
-      subtotal += i.amount;
     });
-
-    const totalAmount = subtotal + tax;
+    const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
+      tax,
+      gstEnabled,
+    });
 
     const requestedPaid = Number(paidAmount || 0);
     if (requestedPaid > totalAmount) {
@@ -125,7 +126,7 @@ exports.createPurchaseInvoice = async (req, res) => {
       invoiceDate,
       items,
       subtotal,
-      tax,
+      tax: invoiceTax,
       totalAmount,
       paidAmount: finalPaidAmount,
       pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
@@ -204,7 +205,8 @@ exports.getPurchases = async (req, res) => {
       companyId: req.user.companyId,
       ...(status === "deleted" ? { isDeleted: true } : {}),
     },
-    req.user.branchScope || req.user.branchId || null,
+    req.user.branchId,
+    req.user.branchIsDefault,
   );
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
@@ -231,7 +233,8 @@ exports.getPurchaseById = async (req, res) => {
         _id: req.params.id,
         companyId: req.user.companyId,
       },
-      req.user.branchScope || req.user.branchId || null,
+      req.user.branchId,
+      req.user.branchIsDefault,
     ),
   )
     .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
@@ -261,7 +264,14 @@ exports.updatePurchaseInvoice = async (req, res) => {
     const partyId = bodyPartyId || supplierId;
 
     const invoice = await PurchaseInvoice.findOne(
-      withBranchScope({ _id: id, companyId: req.user.companyId }, branchScope),
+      withBranchScope(
+        {
+          _id: id,
+          companyId: req.user.companyId,
+        },
+        branchId,
+        req.user.branchIsDefault,
+      ),
     );
 
     if (!invoice) {
@@ -324,16 +334,16 @@ exports.updatePurchaseInvoice = async (req, res) => {
       invoiceType: "PURCHASE",
     });
 
-    let subtotal = 0;
+    const gstEnabled = await getCompanyGstEnabled(req.user.companyId);
     items.forEach((i) => {
       if (!i.productId || !i.quantity || !i.rate) {
         throw new Error("Invalid item data");
       }
-      i.amount = i.quantity * i.rate;
-      subtotal += i.amount;
     });
-
-    const totalAmount = subtotal + tax;
+    const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
+      tax,
+      gstEnabled,
+    });
 
     const requestedPaid = Number(paidAmount || 0);
     if (requestedPaid > totalAmount) {
@@ -347,8 +357,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     let newParty = null;
     if (partyId) {
       newParty = await Party.findOne({
-        _id: partyId,
-        companyId: req.user.companyId,
+        ...withBranchScope({ _id: partyId, companyId: req.user.companyId }, branchId, req.user.branchIsDefault),
         roles: "supplier",
       });
       if (!newParty) {
@@ -378,7 +387,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
     invoice.invoiceNo = normalizedInvoiceNo;
     invoice.items = items;
     invoice.subtotal = subtotal;
-    invoice.tax = tax;
+    invoice.tax = invoiceTax;
     invoice.totalAmount = totalAmount;
     invoice.invoiceDate = invoiceDate;
 
@@ -453,9 +462,15 @@ exports.updatePurchaseInvoice = async (req, res) => {
 
 exports.deletePurchaseInvoice = async (req, res) => {
   try {
-    const branchScope = req.user.branchScope || req.user.branchId || null;
     const invoice = await PurchaseInvoice.findOne(
-      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, branchScope),
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
     );
 
     if (!invoice) {
@@ -463,36 +478,39 @@ exports.deletePurchaseInvoice = async (req, res) => {
     }
 
     const [hasPayments, hasReturns, batches] = await Promise.all([
-      Payment.exists({
-        ...withBranchScope(
+      Payment.exists(
+        withBranchScope(
           {
             companyId: req.user.companyId,
             invoiceType: "PURCHASE",
             invoiceId: invoice._id,
           },
-          branchScope,
+          req.user.branchId,
+          req.user.branchIsDefault,
         ),
-      }),
-      ReturnEntry.exists({
-        ...withBranchScope(
+      ),
+      ReturnEntry.exists(
+        withBranchScope(
           {
             companyId: req.user.companyId,
             billType: "PURCHASE",
             billId: invoice._id,
           },
-          branchScope,
+          req.user.branchId,
+          req.user.branchIsDefault,
         ),
-      }),
-      StockBatch.find({
-        ...withBranchScope(
+      ),
+      StockBatch.find(
+        withBranchScope(
           {
             companyId: req.user.companyId,
             sourceType: "PURCHASE",
             sourceId: invoice._id,
           },
-          branchScope,
+          req.user.branchId,
+          req.user.branchIsDefault,
         ),
-      }).select("totalQty remainingQty"),
+      ).select("totalQty remainingQty"),
     ]);
 
     if (hasPayments) {
@@ -525,26 +543,28 @@ exports.deletePurchaseInvoice = async (req, res) => {
       }
     }
 
-    await StockLedger.deleteMany({
-      ...withBranchScope(
+    await StockLedger.deleteMany(
+      withBranchScope(
         {
           companyId: req.user.companyId,
           referenceId: invoice._id,
           referenceType: "PURCHASE_INVOICE",
         },
-        branchScope,
+        req.user.branchId,
+        req.user.branchIsDefault,
       ),
-    });
-    await StockBatch.deleteMany({
-      ...withBranchScope(
+    );
+    await StockBatch.deleteMany(
+      withBranchScope(
         {
           companyId: req.user.companyId,
           sourceType: "PURCHASE",
           sourceId: invoice._id,
         },
-        branchScope,
+        req.user.branchId,
+        req.user.branchIsDefault,
       ),
-    });
+    );
 
     invoice.isDeleted = true;
     invoice.deletedAt = new Date();
@@ -560,7 +580,6 @@ exports.deletePurchaseInvoice = async (req, res) => {
 exports.restorePurchaseInvoice = async (req, res) => {
   try {
     const branchId = req.user.branchId || null;
-    const branchScope = req.user.branchScope || branchId;
     const invoice = await PurchaseInvoice.findOne(
       withBranchScope(
         {
@@ -568,7 +587,8 @@ exports.restorePurchaseInvoice = async (req, res) => {
           companyId: req.user.companyId,
           isDeleted: true,
         },
-        branchScope,
+        branchId,
+        req.user.branchIsDefault,
       ),
     ).setOptions({ withDeleted: true });
 

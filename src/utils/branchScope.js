@@ -1,76 +1,102 @@
 const mongoose = require("mongoose");
 
-const MAIN_BRANCH_ALIASES = new Set(["0", "main", "main_branch", "main-branch"]);
+const MAIN_BRANCH_ALIASES = new Set(["", "0", "main", "main_branch", "main-branch"]);
 
-const isTruthyMainAlias = (value) => {
-  const normalized = String(value || "").trim().toLowerCase();
-  return !normalized || MAIN_BRANCH_ALIASES.has(normalized);
+const isMainBranchAlias = (value) => {
+  if (value === null || value === undefined) return true;
+  return MAIN_BRANCH_ALIASES.has(String(value).trim().toLowerCase());
+};
+
+const getBranchValues = (branchId) => {
+  if (isMainBranchAlias(branchId)) return [];
+  const stringValue = String(branchId);
+  if (!mongoose.Types.ObjectId.isValid(stringValue)) {
+    return [];
+  }
+  return [new mongoose.Types.ObjectId(stringValue), stringValue];
 };
 
 const toValidObjectIdString = (value) => {
-  const normalized = String(value || "").trim();
-  if (!normalized || !mongoose.Types.ObjectId.isValid(normalized)) {
-    return null;
-  }
-  return normalized;
+  if (isMainBranchAlias(value)) return null;
+  const stringValue = String(value);
+  return mongoose.Types.ObjectId.isValid(stringValue) ? stringValue : null;
 };
 
-const normalizeBranchScope = (branchScope) => {
-  if (!branchScope) {
-    return { branchId: null, isMainBranch: false };
-  }
-
-  if (typeof branchScope === "object") {
-    const rawBranchId = branchScope.branchId || branchScope._id || branchScope.id || "";
+const normalizeBranchScope = (branchScope = null) => {
+  if (branchScope && typeof branchScope === "object" && !Array.isArray(branchScope)) {
+    const branchId = toValidObjectIdString(branchScope.branchId || branchScope._id);
     return {
-      branchId: toValidObjectIdString(rawBranchId),
-      isMainBranch:
-        Boolean(branchScope.isDefault || branchScope.isMainBranch) ||
-        isTruthyMainAlias(rawBranchId),
+      branchId,
+      isMainBranch: Boolean(branchScope.isMainBranch) || isMainBranchAlias(branchScope.branchId || branchScope._id),
     };
   }
 
   return {
     branchId: toValidObjectIdString(branchScope),
-    isMainBranch: isTruthyMainAlias(branchScope),
+    isMainBranch: isMainBranchAlias(branchScope),
   };
 };
 
-const buildLegacyMainBranchClause = (branchId) => ({
-  $or: [
-    { branchId },
-    { branchId: null },
-    { branchId: { $exists: false } },
-  ],
-});
-
-const withBranchScope = (query = {}, branchScope) => {
-  const { branchId, isMainBranch } = normalizeBranchScope(branchScope);
-  if (!branchId && !isMainBranch) {
-    return query;
-  }
-
-  if (isMainBranch) {
-    if (!branchId) {
-      return {
-        $and: [query, { $or: [{ branchId: null }, { branchId: { $exists: false } }] }],
-      };
-    }
+const buildBranchFilter = (branchId, branchIsDefault = false) => {
+  if (isMainBranchAlias(branchId)) {
     return {
-      $and: [query, buildLegacyMainBranchClause(branchId)],
+      $or: [
+        { branchId: { $exists: false } },
+        { branchId: null },
+      ],
     };
   }
 
+  const branchValues = getBranchValues(branchId);
+  if (!branchValues.length) {
+    return { branchId: null, _id: { $exists: false } };
+  }
+  const selectedBranchFilter =
+    branchValues.length > 1 ? { branchId: { $in: branchValues } } : { branchId: branchValues[0] };
+
+  if (branchIsDefault) {
+    return {
+      $or: [
+        selectedBranchFilter,
+        { branchId: { $exists: false } },
+        { branchId: null },
+      ],
+    };
+  }
+
+  return selectedBranchFilter;
+};
+
+const withBranchScope = (query = {}, branchId, branchIsDefault = false) => {
+  const branchFilter = buildBranchFilter(branchId, branchIsDefault);
+  const { branchId: _unsafeBranchId, ...baseQuery } = query;
+  if (query.$or && branchFilter.$or) {
+    return { $and: [baseQuery, branchFilter] };
+  }
   return {
-    ...query,
-    branchId,
+    ...baseQuery,
+    ...branchFilter,
   };
 };
 
+const getUserBranchId = (user = {}) => user.branchId || null;
+
+const isUserDefaultBranch = (user = {}) => Boolean(user.branchIsDefault);
+
+const withUserBranchScope = (query = {}, user = {}) =>
+  withBranchScope(query, getUserBranchId(user), isUserDefaultBranch(user));
+
+const getBranchScopeQuery = buildBranchFilter;
+
 module.exports = {
   MAIN_BRANCH_ALIASES,
+  getBranchScopeQuery,
   toValidObjectIdString,
   normalizeBranchScope,
-  buildLegacyMainBranchClause,
   withBranchScope,
+  withUserBranchScope,
+  buildBranchFilter,
+  getUserBranchId,
+  isUserDefaultBranch,
+  isMainBranchAlias,
 };

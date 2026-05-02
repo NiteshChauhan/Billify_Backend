@@ -7,6 +7,7 @@ const Product = require("../models/Product");
 const Payment = require("../models/Payment");
 const StockBatch = require("../models/StockBatch");
 const BankAccount = require("../models/BankAccount");
+const { logAudit } = require("../utils/auditLog");
 const {
   getAvailableStock,
   restoreBatchesFromBreakdown,
@@ -24,7 +25,108 @@ const normalizeReturnType = (value = "") => {
 };
 
 const getBillModelByReturnType = (returnType) =>
-  returnType === "PURCHASE_RETURN" ? PurchaseInvoice : SalesInvoice;
+  (returnType === "PURCHASE_RETURN" ? PurchaseInvoice : SalesInvoice);
+
+const loadReplacementBillDetails = async (companyId, entry, branchId, branchIsDefault = false) => {
+  if (!entry?.replacementBillId || !entry?.replacementBillType) {
+    return [];
+  }
+
+  const BillModel = entry.replacementBillType === "PURCHASE" ? PurchaseInvoice : SalesInvoice;
+  const replacementBill = await BillModel.findOne(
+    withBranchScope(
+      {
+        _id: entry.replacementBillId,
+        companyId,
+      },
+      branchId,
+      branchIsDefault,
+    ),
+  )
+    .setOptions({ withDeleted: true })
+    .populate("partyId", "name")
+    .select("_id invoiceNo invoiceDate totalAmount status partyId isDeleted");
+
+  if (!replacementBill) {
+    return [];
+  }
+
+  return [
+    {
+      id: replacementBill._id,
+      billNo: replacementBill.invoiceNo || "",
+      invoiceNo: replacementBill.invoiceNo || "",
+      date: replacementBill.invoiceDate || null,
+      customerName: replacementBill.partyId?.name || "",
+      totalAmount: Number(replacementBill.totalAmount || 0),
+      status: replacementBill.isDeleted ? "DELETED" : replacementBill.status || "ACTIVE",
+      billType: entry.replacementBillType,
+      linkedReturnId: entry._id,
+      linkedReturnNo: entry.returnNo || "",
+    },
+  ];
+};
+
+const attachReplacementBillMeta = async (entries = [], companyId, branchId, branchIsDefault = false) => {
+  const saleIds = [...new Set(
+    entries
+      .filter((entry) => entry.replacementBillId && entry.replacementBillType === "SALE")
+      .map((entry) => String(entry.replacementBillId)),
+  )];
+  const purchaseIds = [...new Set(
+    entries
+      .filter((entry) => entry.replacementBillId && entry.replacementBillType === "PURCHASE")
+      .map((entry) => String(entry.replacementBillId)),
+  )];
+
+  const [sales, purchases] = await Promise.all([
+    saleIds.length
+      ? SalesInvoice.find(
+          withBranchScope({ companyId, _id: { $in: saleIds } }, branchId, branchIsDefault),
+        )
+          .setOptions({ withDeleted: true })
+          .populate("partyId", "name")
+          .select("_id invoiceNo invoiceDate totalAmount status partyId isDeleted")
+      : [],
+    purchaseIds.length
+      ? PurchaseInvoice.find(
+          withBranchScope({ companyId, _id: { $in: purchaseIds } }, branchId, branchIsDefault),
+        )
+          .setOptions({ withDeleted: true })
+          .populate("partyId", "name")
+          .select("_id invoiceNo invoiceDate totalAmount status partyId isDeleted")
+      : [],
+  ]);
+
+  const saleMap = new Map(sales.map((bill) => [String(bill._id), bill]));
+  const purchaseMap = new Map(purchases.map((bill) => [String(bill._id), bill]));
+
+  return entries.map((entry) => {
+    const raw = typeof entry.toObject === "function" ? entry.toObject() : { ...entry };
+    const linkedBill =
+      raw.replacementBillType === "PURCHASE"
+        ? purchaseMap.get(String(raw.replacementBillId))
+        : saleMap.get(String(raw.replacementBillId));
+
+    return {
+      ...raw,
+      replacementBills: linkedBill
+        ? [
+            {
+              id: linkedBill._id,
+              billNo: linkedBill.invoiceNo || "",
+              invoiceNo: linkedBill.invoiceNo || "",
+              date: linkedBill.invoiceDate || null,
+              customerName: linkedBill.partyId?.name || "",
+              totalAmount: Number(linkedBill.totalAmount || 0),
+              status: linkedBill.isDeleted ? "DELETED" : linkedBill.status || "ACTIVE",
+              billType: raw.replacementBillType,
+            },
+          ]
+        : [],
+    };
+  });
+};
 
 const consumeSpecificBatchBreakdown = async (companyId, breakdown = [], quantity) => {
   let remaining = Number(quantity || 0);
@@ -116,6 +218,7 @@ const computeReturnCostFromBreakdown = (breakdown = [], returnQty = 0) => {
 const createReplacementSale = async ({
   companyId,
   branchId,
+  branchIsDefault = false,
   partyId,
   items = [],
   paymentType = "credit",
@@ -162,6 +265,7 @@ const createReplacementSale = async ({
       const { breakdown, actualCost } = await consumeBatches({
         companyId,
         branchId,
+        branchIsDefault,
         productId: item.productId,
       quantity: item.quantity,
       asOfDate: invoiceDate || new Date(),
@@ -328,10 +432,10 @@ const createReplacementPurchase = async ({
       referenceType: "PURCHASE_INVOICE",
       referenceId: invoice._id,
     });
-      await StockBatch.create({
-        companyId,
-        branchId,
-        productId: item.productId,
+    await StockBatch.create({
+      companyId,
+      branchId,
+      productId: item.productId,
       sourceType: "PURCHASE",
       sourceId: invoice._id,
       totalQty: Number(item.quantity || 0),
@@ -380,7 +484,11 @@ exports.createSaleReturn = async (req, res) => {
     const branchId = req.user.branchId || null;
 
     const invoice = await SalesInvoice.findOne(
-      withBranchScope({ _id: billId, companyId }, branchScope),
+      withBranchScope(
+        { _id: billId, companyId },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
     );
     if (!invoice) {
       return res.status(404).json({ message: "Sales bill not found" });
@@ -388,11 +496,17 @@ exports.createSaleReturn = async (req, res) => {
 
     validateItems(items);
 
-    const previousReturns = await ReturnEntry.find({
-      ...withBranchScope({ companyId }, branchScope),
-      billType: "SALE",
-      billId,
-    });
+    const previousReturns = await ReturnEntry.find(
+      withBranchScope(
+        {
+          companyId,
+          billType: "SALE",
+          billId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
     const returnedMap = {};
     previousReturns.forEach((entry) => {
       entry.items.forEach((item) => {
@@ -432,8 +546,8 @@ exports.createSaleReturn = async (req, res) => {
           item.quantity,
         );
       } else {
-        await restoreByAverageCost(companyId, branchScope, item.productId, item.quantity, returnDate || new Date());
-        const avgRate = await computeLedgerAverageCost(companyId, branchScope, item.productId, returnDate || new Date());
+        await restoreByAverageCost(companyId, req.user.branchId || null, item.productId, item.quantity, returnDate || new Date(), req.user.branchIsDefault);
+        const avgRate = await computeLedgerAverageCost(companyId, req.user.branchId || null, item.productId, returnDate || new Date(), req.user.branchIsDefault);
         item.costAmount = Number((avgRate * Number(item.quantity || 0)).toFixed(4));
       }
     }
@@ -486,7 +600,8 @@ exports.createSaleReturn = async (req, res) => {
       try {
         replacementInvoice = await createReplacementSale({
           companyId,
-          branchId,
+          branchId: req.user.branchId || null,
+          branchIsDefault: req.user.branchIsDefault,
           partyId: invoice.partyId,
           items: replacement.items,
           paymentType: replacement.paymentType,
@@ -536,7 +651,11 @@ exports.createPurchaseReturn = async (req, res) => {
     }
 
     const invoice = await PurchaseInvoice.findOne(
-      withBranchScope({ _id: billId, companyId }, branchScope),
+      withBranchScope(
+        { _id: billId, companyId },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
     );
     if (!invoice) {
       return res.status(404).json({ message: "Purchase bill not found" });
@@ -544,11 +663,17 @@ exports.createPurchaseReturn = async (req, res) => {
 
     validateItems(items);
 
-    const previousReturns = await ReturnEntry.find({
-      ...withBranchScope({ companyId }, branchScope),
-      billType: "PURCHASE",
-      billId,
-    });
+    const previousReturns = await ReturnEntry.find(
+      withBranchScope(
+        {
+          companyId,
+          billType: "PURCHASE",
+          billId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    );
     const returnedMap = {};
     previousReturns.forEach((entry) => {
       entry.items.forEach((item) => {
@@ -576,7 +701,7 @@ exports.createPurchaseReturn = async (req, res) => {
         item.amount = Number((item.quantity * item.rate).toFixed(2));
       }
 
-      const availableStock = await getAvailableStock(companyId, branchScope, item.productId);
+      const availableStock = await getAvailableStock(companyId, req.user.branchId || null, item.productId, new Date(), req.user.branchIsDefault);
       if (availableStock < item.quantity) {
         return res.status(400).json({
           message: `Insufficient stock for purchase return. Available: ${availableStock}`,
@@ -586,7 +711,7 @@ exports.createPurchaseReturn = async (req, res) => {
 
     for (const item of items) {
       try {
-        await consumePurchaseBatches(companyId, branchScope, item.productId, invoice._id, item.quantity);
+        await consumePurchaseBatches(companyId, req.user.branchId || null, item.productId, invoice._id, item.quantity, req.user.branchIsDefault);
       } catch (err) {
         await consumeBatches({
           companyId,
@@ -642,7 +767,7 @@ exports.createPurchaseReturn = async (req, res) => {
       try {
         replacementInvoice = await createReplacementPurchase({
           companyId,
-          branchId,
+          branchId: req.user.branchId || null,
           partyId: invoice.partyId,
           items: replacement.items,
           paymentType: replacement.paymentType,
@@ -718,7 +843,13 @@ exports.getReturnBillItems = async (req, res) => {
     const billType = returnType === "PURCHASE_RETURN" ? "PURCHASE" : "SALE";
     const billId = req.params.billId;
 
-    const bill = await BillModel.findOne(withBranchScope({ _id: billId, companyId }, branchScope))
+    const bill = await BillModel.findOne(
+      withBranchScope(
+        { _id: billId, companyId },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    )
       .populate("partyId", "name")
       .populate("items.productId", "name");
 
@@ -726,11 +857,17 @@ exports.getReturnBillItems = async (req, res) => {
       return res.status(404).json({ message: "Bill not found" });
     }
 
-    const previousReturns = await ReturnEntry.find({
-      ...withBranchScope({ companyId }, branchScope),
-      billType,
-      billId,
-    }).select("items.productId items.quantity");
+    const previousReturns = await ReturnEntry.find(
+      withBranchScope(
+        {
+          companyId,
+          billType,
+          billId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    ).select("items.productId items.quantity");
 
     const returnedMap = {};
     previousReturns.forEach((entry) => {
@@ -779,7 +916,8 @@ exports.getReturns = async (req, res) => {
       companyId: req.user.companyId,
       ...(status === "deleted" ? { isDeleted: true } : {}),
     },
-    req.user.branchScope || req.user.branchId || null,
+    req.user.branchId,
+    req.user.branchIsDefault,
   );
   if (req.query.billId) query.billId = req.query.billId;
   if (req.query.billType) query.billType = req.query.billType;
@@ -795,15 +933,24 @@ exports.getReturns = async (req, res) => {
     .populate("items.productId", "name")
     .sort({ returnDate: -1, createdAt: -1 });
 
-  res.json(data);
+  const rows = await attachReplacementBillMeta(
+    data,
+    req.user.companyId,
+    req.user.branchId,
+    req.user.branchIsDefault,
+  );
+
+  res.json(rows);
 };
 
 exports.deleteReturn = async (req, res) => {
   try {
-    const branchScope = req.user.branchScope || req.user.branchId || null;
-    const branchId = req.user.branchId || null;
     const entry = await ReturnEntry.findOne(
-      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, branchScope),
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
     );
 
     if (!entry) {
@@ -811,8 +958,17 @@ exports.deleteReturn = async (req, res) => {
     }
 
     if (entry.replacementBillId) {
+      const replacementBills = await loadReplacementBillDetails(
+        req.user.companyId,
+        entry,
+        req.user.branchId,
+        req.user.branchIsDefault,
+      );
       return res.status(400).json({
+        success: false,
+        code: "REPLACEMENT_BILL_EXISTS",
         message: "Delete linked replacement bill first before deleting this return",
+        replacementBills,
       });
     }
 
@@ -836,7 +992,7 @@ exports.deleteReturn = async (req, res) => {
             item.quantity,
           );
         } else {
-          const availableStock = await getAvailableStock(req.user.companyId, branchScope, item.productId);
+          const availableStock = await getAvailableStock(req.user.companyId, req.user.branchId || null, item.productId, new Date(), req.user.branchIsDefault);
           if (availableStock < Number(item.quantity || 0)) {
             return res.status(400).json({
               message: "Return stock has already been used and cannot be deleted",
@@ -906,6 +1062,24 @@ exports.deleteReturn = async (req, res) => {
     entry.deletedBy = req.user._id || null;
     await entry.save();
 
+    await logAudit({
+      companyId: req.user.companyId,
+      userId: req.user._id || null,
+      actionType: "DELETE",
+      module: entry.returnType,
+      entityId: entry._id,
+      description: `Deleted ${entry.returnType === "SALE_RETURN" ? "sale" : "purchase"} return ${entry.returnNo || entry._id}`,
+      details: {
+        apiName: "DELETE /api/returns/:id",
+        branchId: req.user.branchId || null,
+        returnId: entry._id,
+        returnNo: entry.returnNo || "",
+        returnType: entry.returnType,
+        billId: entry.billId,
+        totalAmount: Number(entry.totalAmount || 0),
+      },
+    });
+
     res.json({ message: "Return entry deleted successfully" });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to delete return entry" });
@@ -914,12 +1088,15 @@ exports.deleteReturn = async (req, res) => {
 
 exports.restoreReturn = async (req, res) => {
   try {
-    const branchScope = req.user.branchScope || req.user.branchId || null;
-    const branchId = req.user.branchId || null;
     const entry = await ReturnEntry.findOne(
       withBranchScope(
-        { _id: req.params.id, companyId: req.user.companyId, isDeleted: true },
-        branchScope,
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+          isDeleted: true,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
       ),
     ).setOptions({ withDeleted: true });
 
@@ -935,19 +1112,32 @@ exports.restoreReturn = async (req, res) => {
 
     if (entry.returnType === "SALE_RETURN") {
       const invoice = await SalesInvoice.findOne(
-        withBranchScope({ _id: entry.billId, companyId: req.user.companyId }, branchScope),
+        withBranchScope(
+          {
+            _id: entry.billId,
+            companyId: req.user.companyId,
+          },
+          req.user.branchId,
+          req.user.branchIsDefault,
+        ),
       ).setOptions({ withDeleted: true });
 
       if (!invoice) {
         return res.status(400).json({ message: "Original sale invoice not found" });
       }
 
-      const activeReturns = await ReturnEntry.find({
-        ...withBranchScope({ companyId: req.user.companyId }, branchScope),
-        billType: "SALE",
-        billId: entry.billId,
-        isDeleted: { $ne: true },
-      }).select("items.productId items.quantity");
+      const activeReturns = await ReturnEntry.find(
+        withBranchScope(
+          {
+            companyId: req.user.companyId,
+            billType: "SALE",
+            billId: entry.billId,
+            isDeleted: { $ne: true },
+          },
+          req.user.branchId,
+          req.user.branchIsDefault,
+        ),
+      ).select("items.productId items.quantity");
 
       const returnedMap = {};
       activeReturns.forEach((returnEntry) => {
@@ -985,17 +1175,18 @@ exports.restoreReturn = async (req, res) => {
             item.productId,
             item.quantity,
             entry.returnDate || new Date(),
+            req.user.branchIsDefault,
           );
         }
       }
     } else {
       for (const item of entry.items || []) {
-        const availableStock = await getAvailableStock(req.user.companyId, branchScope, item.productId);
+        const availableStock = await getAvailableStock(req.user.companyId, req.user.branchId || null, item.productId, new Date(), req.user.branchIsDefault);
         if (availableStock < Number(item.quantity || 0)) {
           throw new Error("Insufficient stock to restore this purchase return");
         }
         try {
-          await consumePurchaseBatches(req.user.companyId, branchScope, item.productId, entry.billId, item.quantity);
+          await consumePurchaseBatches(req.user.companyId, req.user.branchId || null, item.productId, entry.billId, item.quantity, req.user.branchIsDefault);
         } catch (err) {
           await consumeBatches({
             companyId: req.user.companyId,

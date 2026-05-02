@@ -6,8 +6,14 @@ const { getAvailableStock } = require("../utils/stockUtils");
 exports.getProductStock = async (req, res) => {
   try {
     const { productId } = req.params;
-    const branchScope = req.user.branchScope || req.user.branchId || null;
-    const stock = await getAvailableStock(req.user.companyId, branchScope, productId);
+
+    const stock = await getAvailableStock(
+      req.user.companyId,
+      req.user.branchId || null,
+      productId,
+      new Date(),
+      req.user.branchIsDefault,
+    );
 
     res.json({ productId, stock });
   } catch (err) {

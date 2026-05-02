@@ -106,8 +106,8 @@ const computeRemainingState = (entries = []) => {
   }));
 };
 
-const recomputeAndPersist = async (companyId, branchId) => {
-  const entries = await LoanEntry.find(withBranchScope({ companyId }, branchId))
+const recomputeAndPersist = async (companyId, branchId, branchIsDefault = false) => {
+  const entries = await LoanEntry.find(withBranchScope({ companyId }, branchId, branchIsDefault))
     .sort({ date: 1, createdAt: 1, _id: 1 })
     .lean();
   const updates = computeRemainingState(entries);
@@ -116,7 +116,7 @@ const recomputeAndPersist = async (companyId, branchId) => {
   await LoanEntry.bulkWrite(
     updates.map((item) => ({
       updateOne: {
-        filter: { _id: item.id, companyId, branchId: branchId || null },
+        filter: withBranchScope({ _id: item.id, companyId }, branchId, branchIsDefault),
         update: { $set: { remainingAmount: Number(item.remainingAmount || 0) } },
       },
     })),
@@ -127,8 +127,9 @@ exports.createLoan = async (req, res) => {
   try {
     const branchScope = req.user.branchScope || req.user.branchId || null;
     const payload = await normalizePayload(req.user.companyId, req.body);
-    const existing = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId }, branchScope))
-      .sort({ date: 1, createdAt: 1, _id: 1 }).lean();
+    const existing = await LoanEntry.find(
+      withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
+    ).sort({ date: 1, createdAt: 1, _id: 1 }).lean();
     computeRemainingState([
       ...existing,
       {
@@ -145,7 +146,7 @@ exports.createLoan = async (req, res) => {
       remainingAmount: payload.type === "loan_in" ? payload.amount : 0,
     });
 
-    await recomputeAndPersist(req.user.companyId, req.user.branchId || null);
+    await recomputeAndPersist(req.user.companyId, req.user.branchId || null, req.user.branchIsDefault);
     const populated = await LoanEntry.findById(entry._id).populate("bankAccountId", "accountName accountNumber");
     res.json(populated);
   } catch (err) {
@@ -162,7 +163,8 @@ exports.getLoans = async (req, res) => {
         companyId: req.user.companyId,
         ...(status === "deleted" ? { isDeleted: true } : {}),
       },
-      req.user.branchScope || req.user.branchId || null,
+      req.user.branchId,
+      req.user.branchIsDefault,
     );
     if (req.query.date) {
       query.date = { $gte: startOfDay(req.query.date), $lte: endOfDay(req.query.date) };
@@ -179,8 +181,9 @@ exports.getLoans = async (req, res) => {
 
 exports.updateLoan = async (req, res) => {
   try {
-    const branchScope = req.user.branchScope || req.user.branchId || null;
-    const existingEntry = await LoanEntry.findOne(withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, branchScope))
+    const existingEntry = await LoanEntry.findOne(
+      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
+    )
       .setOptions({ withDeleted: true })
       .lean();
 
@@ -189,7 +192,13 @@ exports.updateLoan = async (req, res) => {
     }
 
     const payload = await normalizePayload(req.user.companyId, req.body);
-    const entries = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId, _id: { $ne: req.params.id } }, branchScope))
+    const entries = await LoanEntry.find(
+      withBranchScope(
+        { companyId: req.user.companyId, _id: { $ne: req.params.id } },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    )
       .sort({ date: 1, createdAt: 1, _id: 1 })
       .lean();
 
@@ -202,11 +211,11 @@ exports.updateLoan = async (req, res) => {
     ]);
 
     await LoanEntry.updateOne(
-      { _id: req.params.id, companyId: req.user.companyId, branchId: req.user.branchId || null },
+      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       { $set: { ...payload, branchId: req.user.branchId || null } },
     );
 
-    await recomputeAndPersist(req.user.companyId, req.user.branchId || null);
+    await recomputeAndPersist(req.user.companyId, req.user.branchId || null, req.user.branchIsDefault);
     const updated = await LoanEntry.findById(req.params.id).populate("bankAccountId", "accountName accountNumber");
     res.json(updated);
   } catch (err) {
@@ -216,21 +225,28 @@ exports.updateLoan = async (req, res) => {
 
 exports.deleteLoan = async (req, res) => {
   try {
-    const branchScope = req.user.branchScope || req.user.branchId || null;
-    const existingEntry = await LoanEntry.findOne(withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, branchScope)).lean();
+    const existingEntry = await LoanEntry.findOne(
+      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
+    ).lean();
 
     if (!existingEntry) {
       return res.status(404).json({ message: "Loan entry not found" });
     }
 
-    const entries = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId, _id: { $ne: req.params.id } }, branchScope))
+    const entries = await LoanEntry.find(
+      withBranchScope(
+        { companyId: req.user.companyId, _id: { $ne: req.params.id } },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    )
       .sort({ date: 1, createdAt: 1, _id: 1 })
       .lean();
 
     computeRemainingState(entries);
 
     await LoanEntry.updateOne(
-      { _id: req.params.id, companyId: req.user.companyId, branchId: req.user.branchId || null },
+      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       {
         $set: {
           isDeleted: true,
@@ -239,7 +255,7 @@ exports.deleteLoan = async (req, res) => {
         },
       },
     );
-    await recomputeAndPersist(req.user.companyId, req.user.branchId || null);
+    await recomputeAndPersist(req.user.companyId, req.user.branchId || null, req.user.branchIsDefault);
     res.json({ message: "Loan entry deleted successfully" });
   } catch (err) {
     res.status(400).json({ message: err.message || "Failed to delete loan entry" });
@@ -248,8 +264,13 @@ exports.deleteLoan = async (req, res) => {
 
 exports.restoreLoan = async (req, res) => {
   try {
-    const branchScope = req.user.branchScope || req.user.branchId || null;
-    const existingEntry = await LoanEntry.findOne(withBranchScope({ _id: req.params.id, companyId: req.user.companyId, isDeleted: true }, branchScope))
+    const existingEntry = await LoanEntry.findOne(
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId, isDeleted: true },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    )
       .setOptions({ withDeleted: true })
       .lean();
 
@@ -257,7 +278,9 @@ exports.restoreLoan = async (req, res) => {
       return res.status(404).json({ message: "Deleted loan entry not found" });
     }
 
-    const entries = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId }, branchScope))
+    const entries = await LoanEntry.find(
+      withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
+    )
       .sort({ date: 1, createdAt: 1, _id: 1 })
       .lean();
 
@@ -270,7 +293,7 @@ exports.restoreLoan = async (req, res) => {
     ]);
 
     await LoanEntry.updateOne(
-      { _id: req.params.id, companyId: req.user.companyId, branchId: req.user.branchId || null },
+      withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       {
         $set: {
           isDeleted: false,
@@ -280,7 +303,7 @@ exports.restoreLoan = async (req, res) => {
       },
     );
 
-    await recomputeAndPersist(req.user.companyId, req.user.branchId || null);
+    await recomputeAndPersist(req.user.companyId, req.user.branchId || null, req.user.branchIsDefault);
     const restored = await LoanEntry.findById(req.params.id)
       .setOptions({ withDeleted: true })
       .populate("bankAccountId", "accountName accountNumber");

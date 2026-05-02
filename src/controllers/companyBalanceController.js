@@ -14,15 +14,10 @@ exports.getCompanyBalance = async (req, res) => {
       return res.status(400).json({ message: "date is required" });
     }
 
-    const record = await CompanyBalance.findOne(
-      withBranchScope(
-        {
-          companyId: req.user.companyId,
-          date: startOfDay(date),
-        },
-        req.user.branchScope || req.user.branchId || null,
-      ),
-    );
+    const record = await CompanyBalance.findOne({
+      ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
+      date: startOfDay(date),
+    });
 
     res.json(record || null);
   } catch (err) {

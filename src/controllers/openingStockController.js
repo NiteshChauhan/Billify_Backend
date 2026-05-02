@@ -18,7 +18,12 @@ exports.addOpeningStock = async (req, res) => {
       return res.status(400).json({ message: "Quantity must be greater than zero" });
     }
 
-    const snapshot = await getOpeningStockSnapshot(req.user.companyId, req.user.branchId || null, productId);
+    const snapshot = await getOpeningStockSnapshot(
+      req.user.companyId,
+      req.user.branchId || null,
+      productId,
+      req.user.branchIsDefault,
+    );
 
     if (!snapshot.product) {
       return res.status(404).json({ message: "Product not found" });
@@ -36,6 +41,7 @@ exports.addOpeningStock = async (req, res) => {
       productId,
       quantity: normalizedQuantity,
       rate,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     res.json({
@@ -53,7 +59,12 @@ exports.addOpeningStock = async (req, res) => {
 exports.getOpeningStockByProduct = async (req, res) => {
   try {
     const { productId } = req.params;
-    const snapshot = await getOpeningStockSnapshot(req.user.companyId, req.user.branchId || null, productId);
+    const snapshot = await getOpeningStockSnapshot(
+      req.user.companyId,
+      req.user.branchId || null,
+      productId,
+      req.user.branchIsDefault,
+    );
 
     if (!snapshot.openingEntry) {
       return res.json({ exists: false, editable: true });
@@ -87,6 +98,7 @@ exports.updateOpeningStock = async (req, res) => {
       productId,
       quantity,
       rate,
+      req.user.branchIsDefault,
     );
 
     if (!snapshot.product) {
@@ -103,6 +115,7 @@ exports.updateOpeningStock = async (req, res) => {
       productId,
       quantity,
       rate,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     res.json({

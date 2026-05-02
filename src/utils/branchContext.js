@@ -1,5 +1,5 @@
 const Branch = require("../models/Branch");
-const { MAIN_BRANCH_ALIASES } = require("./branchScope");
+const { isMainBranchAlias } = require("./branchScope");
 
 const normalizeBranch = (branch) => ({
   _id: String(branch._id),
@@ -44,9 +44,7 @@ const ensureDefaultBranch = async (companyId) => {
 };
 
 const getSelectedBranchForCompany = async (companyId, requestedBranchId) => {
-  const normalizedRequestedBranchId = MAIN_BRANCH_ALIASES.has(
-    String(requestedBranchId || "").trim().toLowerCase(),
-  )
+  const normalizedRequestedBranchId = isMainBranchAlias(requestedBranchId)
     ? null
     : requestedBranchId;
   const branches = await listCompanyBranches(companyId);

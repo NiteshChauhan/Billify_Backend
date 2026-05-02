@@ -65,8 +65,9 @@ exports.getProfit = async (req, res) => {
     }
 
     const includeEntries = mode === "entries";
-    const result = await getProfitSummary(companyId, fromDate, toDate, {
+    const result = await getProfitSummary(companyId, fromDate, toDate, req.user.branchId || null, {
       includeEntries,
+      branchIsDefault: req.user.branchIsDefault,
     });
 
     if (mode === "daily") {

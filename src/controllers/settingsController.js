@@ -24,7 +24,7 @@ const resolveCurrencyDecimals = (currencySymbol, requestedDecimals) => {
 exports.getCompanySettings = async (req, res) => {
   try {
     const company = await Company.findById(req.user.companyId).select(
-      "name nameAr mobile whatsapp email address addressAr gstNumber currencySymbol currencyDecimals pdfLanguage stockSettlementEnabled",
+      "name nameAr mobile whatsapp email address addressAr gstNumber gstEnabled currencySymbol currencyDecimals pdfLanguage stockSettlementEnabled",
     );
     if (!company) {
       return res.status(404).json({ message: "Company not found" });
@@ -49,6 +49,7 @@ exports.saveCompanySettings = async (req, res) => {
       address,
       addressAr,
       gstNumber,
+      gstEnabled,
       currencySymbol,
       currencyDecimals,
       pdfLanguage,
@@ -76,6 +77,7 @@ exports.saveCompanySettings = async (req, res) => {
         address: String(address || "").trim(),
         addressAr: String(addressAr || "").trim(),
         gstNumber: String(gstNumber || "").trim(),
+        gstEnabled: gstEnabled !== false,
         currencySymbol: normalizedCurrencySymbol,
         currencyDecimals: normalizedCurrencyDecimals,
         pdfLanguage: normalizedPdfLanguage,
@@ -83,7 +85,7 @@ exports.saveCompanySettings = async (req, res) => {
       },
       { new: true },
     ).select(
-      "name nameAr mobile whatsapp email address addressAr gstNumber currencySymbol currencyDecimals pdfLanguage stockSettlementEnabled",
+      "name nameAr mobile whatsapp email address addressAr gstNumber gstEnabled currencySymbol currencyDecimals pdfLanguage stockSettlementEnabled",
     );
 
     if (!company) {
