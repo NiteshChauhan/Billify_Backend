@@ -5,6 +5,7 @@ const SalesInvoice = require("../models/SalesInvoice");
 const BankAccount = require("../models/BankAccount");
 const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
+const { withBranchScope } = require("../utils/branchScope");
 
 const getRemainingOpeningBalance = async ({ party, companyId, branchId }) => {
   const openingBalance = Number(party?.openingBalance || 0);
@@ -19,12 +20,11 @@ const getRemainingOpeningBalance = async ({ party, companyId, branchId }) => {
 
   const openingPayments = await Payment.aggregate([
     {
-      $match: {
+      $match: withBranchScope({
         companyId: party.companyId || companyId,
-        branchId: branchId || null,
         partyId: party._id,
         $or: [{ adjustType: "opening" }, { invoiceType: "OPENING" }],
-      },
+      }, branchId),
     },
     {
       $group: {
@@ -45,14 +45,13 @@ const getPendingAmount = async ({ invoice, invoiceType, companyId, branchId }) =
   const [paymentTotals, returnTotals] = await Promise.all([
     Payment.aggregate([
       {
-        $match: {
+        $match: withBranchScope({
           companyId,
-          branchId: branchId || null,
           partyId: invoice.partyId,
           invoiceType: normalizedType,
           invoiceId: invoice._id,
           adjustType: { $ne: "opening" },
-        },
+        }, branchId),
       },
       {
         $group: {
@@ -63,13 +62,12 @@ const getPendingAmount = async ({ invoice, invoiceType, companyId, branchId }) =
     ]),
     ReturnEntry.aggregate([
       {
-        $match: {
+        $match: withBranchScope({
           companyId,
-          branchId: branchId || null,
           partyId: invoice.partyId,
           billType: normalizedType,
           billId: invoice._id,
-        },
+        }, branchId),
       },
       {
         $group: {
@@ -119,11 +117,10 @@ const reversePaymentImpact = async ({ payment, companyId, branchId }) => {
     payment.invoiceType === "SALE" ? SalesInvoice : payment.invoiceType === "PURCHASE" ? PurchaseInvoice : null;
   if (!InvoiceModel) return;
 
-  const invoice = await InvoiceModel.findOne({
+  const invoice = await InvoiceModel.findOne(withBranchScope({
     _id: payment.invoiceId,
     companyId,
-    branchId: branchId || null,
-  });
+  }, branchId));
 
   if (invoice) {
     invoice.paidAmount = Math.max(0, Number(invoice.paidAmount || 0) - Number(payment.amount || 0));
@@ -158,11 +155,10 @@ const restorePaymentImpact = async ({ payment, companyId, branchId }) => {
     payment.invoiceType === "SALE" ? SalesInvoice : payment.invoiceType === "PURCHASE" ? PurchaseInvoice : null;
   if (!InvoiceModel) return;
 
-  const invoice = await InvoiceModel.findOne({
+  const invoice = await InvoiceModel.findOne(withBranchScope({
     _id: payment.invoiceId,
     companyId,
-    branchId: branchId || null,
-  });
+  }, branchId));
 
   if (!invoice) {
     throw new Error("Linked invoice not found for restore");
@@ -217,11 +213,12 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
   } = req.body;
 
   if (invoiceType === "PURCHASE") {
-    const invoice = await PurchaseInvoice.findOne({
-      _id: invoiceId,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const invoice = await PurchaseInvoice.findOne(
+      withBranchScope(
+        { _id: invoiceId, companyId: req.user.companyId },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    );
 
     if (!invoice) {
       throw new Error("Purchase invoice not found");
@@ -307,11 +304,12 @@ const createLegacyPayment = async ({ req, bankAccountId, normalizedAdjustType })
   }
 
   if (invoiceType === "SALE") {
-    const invoice = await SalesInvoice.findOne({
-      _id: invoiceId,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const invoice = await SalesInvoice.findOne(
+      withBranchScope(
+        { _id: invoiceId, companyId: req.user.companyId },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    );
 
     if (!invoice) {
       throw new Error("Sales invoice not found");
@@ -488,12 +486,16 @@ const createAllocatedPayments = async ({ req, bankAccountId }) => {
     }
 
     const InvoiceModel = allocation.type === "sale" ? SalesInvoice : PurchaseInvoice;
-    const invoice = await InvoiceModel.findOne({
-      _id: allocation.refId,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      partyId: party._id,
-    });
+    const invoice = await InvoiceModel.findOne(
+      withBranchScope(
+        {
+          _id: allocation.refId,
+          companyId: req.user.companyId,
+          partyId: party._id,
+        },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    );
 
     if (!invoice) {
       throw new Error(`${allocation.type} reference not found`);
@@ -584,12 +586,14 @@ exports.createPayment = async (req, res) => {
 /* ================= GET PAYMENTS BY INVOICE ================= */
 exports.getPaymentsByInvoice = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
-  const query = {
-    companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
-    invoiceId: req.params.invoiceId,
-    ...(status === "deleted" ? { isDeleted: true } : {}),
-  };
+  const query = withBranchScope(
+    {
+      companyId: req.user.companyId,
+      invoiceId: req.params.invoiceId,
+      ...(status === "deleted" ? { isDeleted: true } : {}),
+    },
+    req.user.branchScope || req.user.branchId || null,
+  );
   const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
@@ -606,11 +610,13 @@ exports.getPaymentsByInvoice = async (req, res) => {
 /* ================= GET PAYMENTS LIST ================= */
 exports.getPayments = async (req, res) => {
   const status = String(req.query.status || "active").toLowerCase();
-  const query = {
-    companyId: req.user.companyId,
-    branchId: req.user.branchId || null,
-    ...(status === "deleted" ? { isDeleted: true } : {}),
-  };
+  const query = withBranchScope(
+    {
+      companyId: req.user.companyId,
+      ...(status === "deleted" ? { isDeleted: true } : {}),
+    },
+    req.user.branchScope || req.user.branchId || null,
+  );
   const withDeleted = status === "deleted" || status === "all";
   const dateRange = getDateRangeFromQuery(req.query);
   if (dateRange) {
@@ -627,11 +633,12 @@ exports.getPayments = async (req, res) => {
 
 exports.deletePayment = async (req, res) => {
   try {
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const payment = await Payment.findOne(
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    );
 
     if (!payment) {
       return res.status(404).json({ error: "Payment not found" });
@@ -640,7 +647,7 @@ exports.deletePayment = async (req, res) => {
     await reversePaymentImpact({
       payment,
       companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
+      branchId: req.user.branchScope || req.user.branchId || null,
     });
 
     payment.isDeleted = true;
@@ -656,12 +663,16 @@ exports.deletePayment = async (req, res) => {
 
 exports.restorePayment = async (req, res) => {
   try {
-    const payment = await Payment.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      isDeleted: true,
-    }).setOptions({ withDeleted: true });
+    const payment = await Payment.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+          isDeleted: true,
+        },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    ).setOptions({ withDeleted: true });
 
     if (!payment) {
       return res.status(404).json({ error: "Deleted payment not found" });
@@ -670,7 +681,7 @@ exports.restorePayment = async (req, res) => {
     await restorePaymentImpact({
       payment,
       companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
+      branchId: req.user.branchScope || req.user.branchId || null,
     });
 
     payment.isDeleted = false;

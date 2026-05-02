@@ -13,7 +13,7 @@ const CollectionTransfer = require("../models/CollectionTransfer");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { getProfitSummary } = require("../utils/profitUtils");
 const { previewConsumeBatches } = require("../utils/stockUtils");
-const { withBranchScope } = require("../utils/branchScope");
+const { normalizeBranchScope, withBranchScope } = require("../utils/branchScope");
 
 const startOfDay = (value) => {
   const date = new Date(value);
@@ -51,8 +51,7 @@ const getDayBookPaymentType = (paymentMode) =>
 const sumAmount = (rows = [], field = "amount") =>
   rows.reduce((sum, row) => sum + Number(row?.[field] || 0), 0);
 
-const loadPaymentInvoiceMeta = async (companyId, payments = []) => {
-  const branchId = payments[0]?.branchId || null;
+const loadPaymentInvoiceMeta = async (companyId, branchScope, payments = []) => {
   const saleIds = [...new Set(
     payments
       .filter((payment) => payment.invoiceType === "SALE" && payment.invoiceId)
@@ -66,10 +65,10 @@ const loadPaymentInvoiceMeta = async (companyId, payments = []) => {
 
   const [sales, purchases] = await Promise.all([
     saleIds.length
-      ? SalesInvoice.find(withBranchScope({ companyId, _id: { $in: saleIds } }, branchId)).select("_id invoiceDate invoiceNo")
+      ? SalesInvoice.find(withBranchScope({ companyId, _id: { $in: saleIds } }, branchScope)).select("_id invoiceDate invoiceNo")
       : [],
     purchaseIds.length
-      ? PurchaseInvoice.find(withBranchScope({ companyId, _id: { $in: purchaseIds } }, branchId)).select("_id invoiceDate invoiceNo")
+      ? PurchaseInvoice.find(withBranchScope({ companyId, _id: { $in: purchaseIds } }, branchScope)).select("_id invoiceDate invoiceNo")
       : [],
   ]);
 
@@ -150,30 +149,32 @@ const isPreviousDueSettlementPayment = (payment) => {
 const fetchDayBookTransactions = async ({
   companyId,
   branchId,
+  branchScope = branchId,
   fromDate,
   toDate,
   paymentTypeFilter,
   includeRows = true,
 }) => {
   const invoiceQuery = {
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchScope),
     invoiceDate: { $gte: fromDate, $lte: toDate },
   };
   const paymentQuery = {
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchScope),
     paymentDate: { $gte: fromDate, $lte: toDate },
     paymentMode: getPaymentModeQuery(paymentTypeFilter),
   };
   const expenseQuery = {
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchScope),
     date: { $gte: fromDate, $lte: toDate },
     ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
   };
   const loanQuery = {
-    ...withBranchScope({ companyId }, branchId),
+    ...withBranchScope({ companyId }, branchScope),
     date: { $gte: fromDate, $lte: toDate },
     ...(paymentTypeFilter === "all" ? {} : { paymentType: paymentTypeFilter }),
   };
+  const normalizedBranch = normalizeBranchScope(branchScope);
 
   const [rawSales, rawPurchases, rawPayments, expenses, loans, returns, collectionTransfers] = await Promise.all([
     SalesInvoice.find(invoiceQuery)
@@ -196,7 +197,7 @@ const fetchDayBookTransactions = async ({
       .populate("bankAccountId", "accountName")
       .sort({ date: 1, createdAt: 1 }),
     ReturnEntry.find({
-      ...withBranchScope({ companyId }, branchId),
+      ...withBranchScope({ companyId }, branchScope),
       returnDate: { $gte: fromDate, $lte: toDate },
     })
       .populate("partyId", "name")
@@ -205,8 +206,8 @@ const fetchDayBookTransactions = async ({
       companyId,
       transferDate: { $gte: fromDate, $lte: toDate },
       $or: [
-        { fromBranchId: branchId || null },
-        { toBranchId: branchId || null },
+        { fromBranchId: normalizedBranch.branchId || null },
+        { toBranchId: normalizedBranch.branchId || null },
       ],
       status: "completed",
     })
@@ -215,7 +216,7 @@ const fetchDayBookTransactions = async ({
       .sort({ transferDate: 1, createdAt: 1 }),
   ]);
 
-  const payments = (await loadPaymentInvoiceMeta(companyId, rawPayments))
+  const payments = (await loadPaymentInvoiceMeta(companyId, branchScope, rawPayments))
     .filter((payment) => isPreviousDueSettlementPayment(payment));
 
   const sales = rawSales.filter((invoice) =>
@@ -304,7 +305,7 @@ const fetchDayBookTransactions = async ({
   }));
 
   const collectionRows = collectionTransfers.map((transfer) => {
-    const isIncoming = String(transfer.toBranchId?._id || transfer.toBranchId) === String(branchId || "");
+    const isIncoming = String(transfer.toBranchId?._id || transfer.toBranchId) === String(normalizedBranch.branchId || "");
     return {
       date: transfer.transferDate,
       type: isIncoming ? "collection_transfer_in" : "collection_transfer_out",
@@ -388,11 +389,7 @@ const fetchDayBookTransactions = async ({
 
 const computeOpeningBalance = async ({ companyId, branchId, selectedDate, paymentTypeFilter }) => {
   const dayStart = startOfDay(selectedDate);
-  const manualOpening = await CompanyBalance.findOne({
-    companyId,
-    branchId: branchId || null,
-    date: dayStart,
-  });
+  const manualOpening = await CompanyBalance.findOne(withBranchScope({ companyId, date: dayStart }, branchId));
 
   if (manualOpening) {
     return {
@@ -401,11 +398,9 @@ const computeOpeningBalance = async ({ companyId, branchId, selectedDate, paymen
     };
   }
 
-  const latestManualBefore = await CompanyBalance.findOne({
-    companyId,
-    branchId: branchId || null,
-    date: { $lt: dayStart },
-  }).sort({ date: -1 });
+  const latestManualBefore = await CompanyBalance.findOne(
+    withBranchScope({ companyId, date: { $lt: dayStart } }, branchId),
+  ).sort({ date: -1 });
 
   const baseDate = latestManualBefore ? startOfDay(latestManualBefore.date) : null;
   const baseBalance = Number(latestManualBefore?.openingBalance || 0);
@@ -413,8 +408,9 @@ const computeOpeningBalance = async ({ companyId, branchId, selectedDate, paymen
   if (!baseDate) {
     const movement = await fetchDayBookTransactions({
       companyId,
-      branchId,
-      fromDate: new Date(0),
+        branchId,
+        branchScope: branchId,
+        fromDate: new Date(0),
       toDate: new Date(dayStart.getTime() - 1),
       paymentTypeFilter,
       includeRows: false,
@@ -445,9 +441,10 @@ exports.stockReport = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const branchId = req.user.branchId || null;
+    const branchScope = req.user.branchScope || branchId;
 
     const report = await StockLedger.aggregate([
-      { $match: withBranchScope({ companyId }, branchId) },
+      { $match: withBranchScope({ companyId }, branchScope) },
 
       {
         $group: {
@@ -539,7 +536,7 @@ exports.vendorDueReport = async (req, res) => {
 /* ================= PURCHASE REPORT ================= */
 exports.purchaseReport = async (req, res) => {
   try {
-    const query = withBranchScope({ companyId: req.user.companyId }, req.user.branchId || null);
+    const query = withBranchScope({ companyId: req.user.companyId }, req.user.branchScope || req.user.branchId || null);
     const range = getDateRangeFromQuery(req.query);
     if (range) {
       query.invoiceDate = { $gte: range.fromDate, $lte: range.toDate };
@@ -559,7 +556,7 @@ exports.purchaseReport = async (req, res) => {
 /* ================= SALES REPORT ================= */
 exports.salesReport = async (req, res) => {
   try {
-    const query = withBranchScope({ companyId: req.user.companyId }, req.user.branchId || null);
+    const query = withBranchScope({ companyId: req.user.companyId }, req.user.branchScope || req.user.branchId || null);
     const range = getDateRangeFromQuery(req.query);
     if (range) {
       query.invoiceDate = { $gte: range.fromDate, $lte: range.toDate };
@@ -581,6 +578,7 @@ exports.profitLossReport = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const branchId = req.user.branchId || null;
+    const branchScope = req.user.branchScope || branchId;
     const range = getDateRangeFromQuery(req.query);
 
     const defaultFrom = new Date();
@@ -588,7 +586,7 @@ exports.profitLossReport = async (req, res) => {
     const defaultTo = new Date();
     const fromDate = range?.fromDate || defaultFrom;
     const toDate = range?.toDate || defaultTo;
-    const summary = await getProfitSummary(companyId, fromDate, toDate, branchId);
+    const summary = await getProfitSummary(companyId, fromDate, toDate, branchScope);
 
     res.json({
       totalSales: summary.sales,
@@ -608,6 +606,7 @@ exports.dailyReport = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const branchId = req.user.branchId || null;
+    const branchScope = req.user.branchScope || branchId;
     const requestedDate = req.query.date || new Date().toISOString().slice(0, 10);
     const selectedDate = new Date(requestedDate);
 
@@ -651,13 +650,14 @@ exports.dailyReport = async (req, res) => {
     const [openingInfo, todayBook] = await Promise.all([
       computeOpeningBalance({
         companyId,
-        branchId,
+        branchId: branchScope,
         selectedDate,
         paymentTypeFilter,
       }),
       fetchDayBookTransactions({
         companyId,
         branchId,
+        branchScope,
         fromDate: dayStart,
         toDate: dayEnd,
         paymentTypeFilter,
@@ -744,6 +744,7 @@ exports.dayBookBalanceHistory = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const branchId = req.user.branchId || null;
+    const branchScope = req.user.branchScope || branchId;
     const fromRaw = req.query.from || req.query.date;
     const toRaw = req.query.to || req.query.date || fromRaw;
     const paymentTypeFilter = String(req.query.paymentType || "all").toLowerCase();
@@ -764,17 +765,17 @@ exports.dayBookBalanceHistory = async (req, res) => {
     }
 
     const [openingInfo, book, manualOpenings] = await Promise.all([
-      computeOpeningBalance({ companyId, branchId, selectedDate: fromDate, paymentTypeFilter }),
+      computeOpeningBalance({ companyId, branchId: branchScope, selectedDate: fromDate, paymentTypeFilter }),
       fetchDayBookTransactions({
         companyId,
         branchId,
+        branchScope,
         fromDate,
         toDate: endOfDay(toDate),
         paymentTypeFilter,
       }),
       CompanyBalance.find({
-        companyId,
-        branchId,
+        ...withBranchScope({ companyId }, branchScope),
         date: { $gte: fromDate, $lte: toDate },
       }).select("date openingBalance"),
     ]);
@@ -864,6 +865,7 @@ exports.fifoDebug = async (req, res) => {
   try {
     const companyId = req.user.companyId;
     const branchId = req.user.branchId || null;
+    const branchScope = req.user.branchScope || branchId;
     const productId = req.query.productId;
     const qty = Number(req.query.qty || 0);
 
@@ -871,12 +873,12 @@ exports.fifoDebug = async (req, res) => {
       return res.status(400).json({ error: "productId is required" });
     }
 
-    const batches = await StockBatch.find(withBranchScope({ companyId, productId }, branchId))
+    const batches = await StockBatch.find(withBranchScope({ companyId, productId }, branchScope))
       .sort({ createdAt: 1, _id: 1 })
       .select("_id sourceType sourceId totalQty remainingQty rate createdAt");
 
     const preview = qty > 0
-      ? await previewConsumeBatches({ companyId, branchId, productId, quantity: qty })
+      ? await previewConsumeBatches({ companyId, branchId: branchScope, productId, quantity: qty })
       : null;
 
     res.json({
@@ -897,21 +899,15 @@ exports.partyLedger = async (req, res) => {
     const companyId = req.user.companyId;
 
     const purchaseInvoices = await PurchaseInvoice.find({
-      partyId,
-      companyId,
-      branchId: req.user.branchId || null,
+      ...withBranchScope({ partyId, companyId }, req.user.branchScope || req.user.branchId || null),
     }).sort({ invoiceDate: -1 });
 
     const salesInvoices = await SalesInvoice.find({
-      partyId,
-      companyId,
-      branchId: req.user.branchId || null,
+      ...withBranchScope({ partyId, companyId }, req.user.branchScope || req.user.branchId || null),
     }).sort({ invoiceDate: -1 });
 
     const payments = await Payment.find({
-      partyId,
-      companyId,
-      branchId: req.user.branchId || null,
+      ...withBranchScope({ partyId, companyId }, req.user.branchScope || req.user.branchId || null),
     }).sort({ createdAt: -1 });
 
     res.json({

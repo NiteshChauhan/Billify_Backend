@@ -75,6 +75,14 @@ module.exports = async (req, res, next) => {
       role: user.role,
       companyId: String(user.companyId),
       branchId: selectedBranch ? String(selectedBranch._id) : null,
+      branchScope: selectedBranch
+        ? {
+            branchId: String(selectedBranch._id),
+            _id: String(selectedBranch._id),
+            isDefault: Boolean(selectedBranch.isDefault),
+            branchName: selectedBranch.branchName || "",
+          }
+        : null,
       branches,
       selectedBranch,
     };

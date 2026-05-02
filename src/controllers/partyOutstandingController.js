@@ -10,12 +10,13 @@ const normalizeRole = (role = "") => {
   return value;
 };
 
-const buildOutstandingForRole = async ({ companyId, role, range }) =>
-  getRoleOutstandingRows({ companyId, role, range });
+const buildOutstandingForRole = async ({ companyId, role, range, branchScope }) =>
+  getRoleOutstandingRows({ companyId, role, range, branchScope });
 
 exports.getOutstandingByRole = async (req, res) => {
   try {
     const companyId = req.user.companyId;
+    const branchScope = req.user.branchScope || req.user.branchId || null;
     const role = normalizeRole(req.query.role);
 
     if (!["supplier", "customer"].includes(role)) {
@@ -23,7 +24,7 @@ exports.getOutstandingByRole = async (req, res) => {
     }
 
     const range = getDateRangeFromQuery(req.query);
-    const data = await buildOutstandingForRole({ companyId, role, range });
+    const data = await buildOutstandingForRole({ companyId, role, range, branchScope });
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -48,17 +49,20 @@ exports.getCustomerOutstanding = async (req, res) => {
 exports.getAllOutstanding = async (req, res) => {
   try {
     const companyId = req.user.companyId;
+    const branchScope = req.user.branchScope || req.user.branchId || null;
     const range = getDateRangeFromQuery(req.query);
 
     const supplier = await buildOutstandingForRole({
       companyId,
       role: "supplier",
       range,
+      branchScope,
     });
     const customer = await buildOutstandingForRole({
       companyId,
       role: "customer",
       range,
+      branchScope,
     });
 
     const map = {};
@@ -92,6 +96,7 @@ exports.getAllOutstanding = async (req, res) => {
 exports.getAgeingByRole = async (req, res) => {
   try {
     const companyId = req.user.companyId;
+    const branchScope = req.user.branchScope || req.user.branchId || null;
     const role = normalizeRole(req.query.role);
     if (!["supplier", "customer"].includes(role)) {
       return res.status(400).json({ message: "role must be supplier or customer" });
@@ -100,6 +105,7 @@ exports.getAgeingByRole = async (req, res) => {
     const summaries = await getPartyBalanceSummaries({
       companyId,
       range: getDateRangeFromQuery(req.query),
+      branchScope,
     });
 
     const rows = summaries

@@ -1,6 +1,7 @@
 const Product = require("../models/Product");
 const StockLedger = require("../models/StockLedger");
 const StockBatch = require("../models/StockBatch");
+const { normalizeBranchScope, withBranchScope } = require("./branchScope");
 
 const OPENING_REFERENCE_TYPE = "OPENING_STOCK";
 const OPENING_BLOCKING_TYPES = [
@@ -23,22 +24,30 @@ const buildError = (message, status = 400) => {
 };
 
 const getPositiveBatches = async (companyId, branchId, productId) =>
-  StockBatch.find({
-    companyId,
-    branchId: branchId || null,
-    productId,
-    remainingQty: { $gt: 0 },
-  }).sort({ createdAt: 1, _id: 1 });
+  StockBatch.find(
+    withBranchScope(
+      {
+        companyId,
+        productId,
+        remainingQty: { $gt: 0 },
+      },
+      branchId,
+    ),
+  ).sort({ createdAt: 1, _id: 1 });
 
 const getOpeningBatch = async (companyId, branchId, productId, openingEntryId) => {
   if (!openingEntryId) return null;
-  return StockBatch.findOne({
-    companyId,
-    branchId: branchId || null,
-    productId,
-    sourceType: "OPENING",
-    sourceId: openingEntryId,
-  }).sort({ createdAt: 1, _id: 1 });
+  return StockBatch.findOne(
+    withBranchScope(
+      {
+        companyId,
+        productId,
+        sourceType: "OPENING",
+        sourceId: openingEntryId,
+      },
+      branchId,
+    ),
+  ).sort({ createdAt: 1, _id: 1 });
 };
 
 const reduceOtherBatches = async ({
@@ -85,18 +94,8 @@ const reduceOtherBatches = async ({
 const getOpeningStockSnapshot = async (companyId, branchId, productId) => {
   const [product, openingEntry, hasTransactions] = await Promise.all([
     Product.findOne({ _id: productId, companyId }),
-    StockLedger.findOne({
-      companyId,
-      branchId: branchId || null,
-      productId,
-      type: "OPENING",
-    }).sort({ createdAt: 1, _id: 1 }),
-    StockLedger.exists({
-      companyId,
-      branchId: branchId || null,
-      productId,
-      type: { $in: OPENING_BLOCKING_TYPES },
-    }),
+    StockLedger.findOne(withBranchScope({ companyId, productId, type: "OPENING" }, branchId)).sort({ createdAt: 1, _id: 1 }),
+    StockLedger.exists(withBranchScope({ companyId, productId, type: { $in: OPENING_BLOCKING_TYPES } }, branchId)),
   ]);
 
   return {
@@ -148,17 +147,15 @@ const syncOpeningStock = async ({
 }) => {
   const normalizedQuantity = Math.max(0, toNumber(quantity, 0));
   const normalizedRate = Math.max(0, toNumber(rate, 0));
+  const { branchId: branchValue } = normalizeBranchScope(branchId);
 
   const product = syncProductFields
     ? await assertProductExists(companyId, productId)
     : null;
 
-  const openingEntry = await StockLedger.findOne({
-    companyId,
-    branchId: branchId || null,
-    productId,
-    type: "OPENING",
-  }).sort({ createdAt: 1, _id: 1 });
+  const openingEntry = await StockLedger.findOne(
+    withBranchScope({ companyId, productId, type: "OPENING" }, branchId),
+  ).sort({ createdAt: 1, _id: 1 });
   const openingBatch = await getOpeningBatch(companyId, branchId, productId, openingEntry?._id);
   const oldQuantity = toNumber(openingEntry?.quantity, 0);
   const delta = normalizedQuantity - oldQuantity;
@@ -177,7 +174,7 @@ const syncOpeningStock = async ({
     if (!openingEntry) {
       activeEntry = await StockLedger.create({
         companyId,
-        branchId: branchId || null,
+        branchId: branchValue || null,
         productId,
         type: "OPENING",
         quantity: normalizedQuantity,
@@ -204,7 +201,7 @@ const syncOpeningStock = async ({
     } else {
       await StockBatch.create({
         companyId,
-        branchId: branchId || null,
+        branchId: branchValue || null,
         productId,
         sourceType: "OPENING",
         sourceId: activeEntry._id,
@@ -226,11 +223,7 @@ const syncOpeningStock = async ({
     }
 
     await StockBatch.deleteMany({
-      companyId,
-      branchId: branchId || null,
-      productId,
-      sourceType: "OPENING",
-      sourceId: { $ne: activeEntry._id },
+      ...withBranchScope({ companyId, productId, sourceType: "OPENING", sourceId: { $ne: activeEntry._id } }, branchId),
     });
   } else if (openingEntry) {
     await reduceOtherBatches({
@@ -241,16 +234,10 @@ const syncOpeningStock = async ({
       excludeBatchId: openingBatch?._id || null,
     });
     await StockBatch.deleteMany({
-      companyId,
-      branchId: branchId || null,
-      productId,
-      sourceType: "OPENING",
+      ...withBranchScope({ companyId, productId, sourceType: "OPENING" }, branchId),
     });
     await StockLedger.deleteMany({
-      companyId,
-      branchId: branchId || null,
-      productId,
-      type: "OPENING",
+      ...withBranchScope({ companyId, productId, type: "OPENING" }, branchId),
     });
     activeEntry = null;
   }

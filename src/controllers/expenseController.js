@@ -1,5 +1,6 @@
 const Expense = require("../models/Expense");
 const BankAccount = require("../models/BankAccount");
+const { withBranchScope } = require("../utils/branchScope");
 
 const startOfDay = (value) => {
   const date = new Date(value);
@@ -70,11 +71,13 @@ exports.createExpense = async (req, res) => {
 exports.getExpenses = async (req, res) => {
   try {
     const status = String(req.query.status || "active").toLowerCase();
-    const query = {
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      ...(status === "deleted" ? { isDeleted: true } : {}),
-    };
+    const query = withBranchScope(
+      {
+        companyId: req.user.companyId,
+        ...(status === "deleted" ? { isDeleted: true } : {}),
+      },
+      req.user.branchScope || req.user.branchId || null,
+    );
     const withDeleted = status === "deleted" || status === "all";
     if (req.query.date) {
       query.date = { $gte: startOfDay(req.query.date), $lte: endOfDay(req.query.date) };
@@ -128,7 +131,10 @@ exports.updateExpense = async (req, res) => {
     }
 
     const expense = await Expense.findOneAndUpdate(
-      { _id: req.params.id, companyId: req.user.companyId, branchId: req.user.branchId || null },
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId },
+        req.user.branchScope || req.user.branchId || null,
+      ),
       {
         date: startOfDay(date),
         title: String(title).trim(),
@@ -152,11 +158,12 @@ exports.updateExpense = async (req, res) => {
 
 exports.deleteExpense = async (req, res) => {
   try {
-    const expense = await Expense.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    });
+    const expense = await Expense.findOne(
+      withBranchScope(
+        { _id: req.params.id, companyId: req.user.companyId },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    );
 
     if (!expense) {
       return res.status(404).json({ message: "Expense not found" });
@@ -175,12 +182,16 @@ exports.deleteExpense = async (req, res) => {
 
 exports.restoreExpense = async (req, res) => {
   try {
-    const expense = await Expense.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      isDeleted: true,
-    }).setOptions({ withDeleted: true });
+    const expense = await Expense.findOne(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+          isDeleted: true,
+        },
+        req.user.branchScope || req.user.branchId || null,
+      ),
+    ).setOptions({ withDeleted: true });
 
     if (!expense) {
       return res.status(404).json({ message: "Deleted expense not found" });

@@ -1,5 +1,6 @@
 const LoanEntry = require("../models/LoanEntry");
 const BankAccount = require("../models/BankAccount");
+const { withBranchScope } = require("../utils/branchScope");
 
 const startOfDay = (value) => {
   const date = new Date(value);
@@ -106,7 +107,7 @@ const computeRemainingState = (entries = []) => {
 };
 
 const recomputeAndPersist = async (companyId, branchId) => {
-  const entries = await LoanEntry.find({ companyId, branchId: branchId || null })
+  const entries = await LoanEntry.find(withBranchScope({ companyId }, branchId))
     .sort({ date: 1, createdAt: 1, _id: 1 })
     .lean();
   const updates = computeRemainingState(entries);
@@ -124,11 +125,10 @@ const recomputeAndPersist = async (companyId, branchId) => {
 
 exports.createLoan = async (req, res) => {
   try {
+    const branchScope = req.user.branchScope || req.user.branchId || null;
     const payload = await normalizePayload(req.user.companyId, req.body);
-    const existing = await LoanEntry.find({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    }).sort({ date: 1, createdAt: 1, _id: 1 }).lean();
+    const existing = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId }, branchScope))
+      .sort({ date: 1, createdAt: 1, _id: 1 }).lean();
     computeRemainingState([
       ...existing,
       {
@@ -157,11 +157,13 @@ exports.getLoans = async (req, res) => {
   try {
     const status = String(req.query.status || "active").toLowerCase();
     const withDeleted = status === "deleted" || status === "all";
-    const query = {
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      ...(status === "deleted" ? { isDeleted: true } : {}),
-    };
+    const query = withBranchScope(
+      {
+        companyId: req.user.companyId,
+        ...(status === "deleted" ? { isDeleted: true } : {}),
+      },
+      req.user.branchScope || req.user.branchId || null,
+    );
     if (req.query.date) {
       query.date = { $gte: startOfDay(req.query.date), $lte: endOfDay(req.query.date) };
     }
@@ -177,11 +179,8 @@ exports.getLoans = async (req, res) => {
 
 exports.updateLoan = async (req, res) => {
   try {
-    const existingEntry = await LoanEntry.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    })
+    const branchScope = req.user.branchScope || req.user.branchId || null;
+    const existingEntry = await LoanEntry.findOne(withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, branchScope))
       .setOptions({ withDeleted: true })
       .lean();
 
@@ -190,11 +189,7 @@ exports.updateLoan = async (req, res) => {
     }
 
     const payload = await normalizePayload(req.user.companyId, req.body);
-    const entries = await LoanEntry.find({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      _id: { $ne: req.params.id },
-    })
+    const entries = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId, _id: { $ne: req.params.id } }, branchScope))
       .sort({ date: 1, createdAt: 1, _id: 1 })
       .lean();
 
@@ -221,21 +216,14 @@ exports.updateLoan = async (req, res) => {
 
 exports.deleteLoan = async (req, res) => {
   try {
-    const existingEntry = await LoanEntry.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    }).lean();
+    const branchScope = req.user.branchScope || req.user.branchId || null;
+    const existingEntry = await LoanEntry.findOne(withBranchScope({ _id: req.params.id, companyId: req.user.companyId }, branchScope)).lean();
 
     if (!existingEntry) {
       return res.status(404).json({ message: "Loan entry not found" });
     }
 
-    const entries = await LoanEntry.find({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      _id: { $ne: req.params.id },
-    })
+    const entries = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId, _id: { $ne: req.params.id } }, branchScope))
       .sort({ date: 1, createdAt: 1, _id: 1 })
       .lean();
 
@@ -260,12 +248,8 @@ exports.deleteLoan = async (req, res) => {
 
 exports.restoreLoan = async (req, res) => {
   try {
-    const existingEntry = await LoanEntry.findOne({
-      _id: req.params.id,
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      isDeleted: true,
-    })
+    const branchScope = req.user.branchScope || req.user.branchId || null;
+    const existingEntry = await LoanEntry.findOne(withBranchScope({ _id: req.params.id, companyId: req.user.companyId, isDeleted: true }, branchScope))
       .setOptions({ withDeleted: true })
       .lean();
 
@@ -273,10 +257,7 @@ exports.restoreLoan = async (req, res) => {
       return res.status(404).json({ message: "Deleted loan entry not found" });
     }
 
-    const entries = await LoanEntry.find({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-    })
+    const entries = await LoanEntry.find(withBranchScope({ companyId: req.user.companyId }, branchScope))
       .sort({ date: 1, createdAt: 1, _id: 1 })
       .lean();
 

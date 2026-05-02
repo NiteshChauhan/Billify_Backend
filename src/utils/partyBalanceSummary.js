@@ -3,6 +3,7 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const Payment = require("../models/Payment");
 const ReturnEntry = require("../models/Return");
+const { withBranchScope } = require("./branchScope");
 
 const buildDateQueries = (range) => {
   if (!range) {
@@ -73,23 +74,23 @@ const finalizeSummary = (summary) => {
   };
 };
 
-const getPartyBalanceSummaries = async ({ companyId, range }) => {
+const getPartyBalanceSummaries = async ({ companyId, range, branchScope = null }) => {
   const { invoiceDateQuery, paymentDateQuery, returnDateQuery } = buildDateQueries(range);
 
   const [parties, sales, purchases, payments, returns] = await Promise.all([
     Party.find({ companyId, isActive: true }).select(
       "name roles openingBalance openingType",
     ),
-    SalesInvoice.find({ companyId, ...invoiceDateQuery }).select(
+    SalesInvoice.find(withBranchScope({ companyId, ...invoiceDateQuery }, branchScope)).select(
       "partyId totalAmount _id",
     ),
-    PurchaseInvoice.find({ companyId, ...invoiceDateQuery }).select(
+    PurchaseInvoice.find(withBranchScope({ companyId, ...invoiceDateQuery }, branchScope)).select(
       "partyId totalAmount _id",
     ),
-    Payment.find({ companyId, ...paymentDateQuery }).select(
+    Payment.find(withBranchScope({ companyId, ...paymentDateQuery }, branchScope)).select(
       "partyId amount paymentType invoiceType _id",
     ),
-    ReturnEntry.find({ companyId, ...returnDateQuery }).select(
+    ReturnEntry.find(withBranchScope({ companyId, ...returnDateQuery }, branchScope)).select(
       "partyId totalAmount returnType _id",
     ),
   ]);
@@ -153,9 +154,9 @@ const getPartyBalanceSummaries = async ({ companyId, range }) => {
   return Array.from(summaryMap.values()).map(finalizeSummary);
 };
 
-const getRoleOutstandingRows = async ({ companyId, role, range }) => {
+const getRoleOutstandingRows = async ({ companyId, role, range, branchScope = null }) => {
   const normalizedRole = String(role || "").toLowerCase();
-  const summaries = await getPartyBalanceSummaries({ companyId, range });
+  const summaries = await getPartyBalanceSummaries({ companyId, range, branchScope });
 
   return summaries
     .filter((summary) => (summary.roles || []).includes(normalizedRole))
