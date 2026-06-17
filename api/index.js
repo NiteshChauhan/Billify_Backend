@@ -130,6 +130,11 @@ app.use("/api/settings", require("../src/routes/settingsRoutes"));
 app.use("/api/branches", require("../src/routes/branchRoutes"));
 app.use("/api/backup", require("../src/routes/backupRoutes"));
 app.use("/api/logs", require("../src/routes/auditLogRoutes"));
+app.use("/api/admin/units", require("../src/routes/adminUnitRoutes"));
+app.use("/api/admin/applicators", require("../src/routes/adminApplicatorRoutes"));
+app.use("/api/admin/sites", require("../src/routes/adminSiteRoutes"));
+app.use("/api/admin/party-site-applicators", require("../src/routes/adminPartySiteApplicatorRoutes"));
+app.use("/api/admin", require("../src/routes/adminApplicatorReportRoutes"));
 
 /* ================= 404 ================= */
 app.use((req, res) => {
