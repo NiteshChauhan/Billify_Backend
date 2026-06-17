@@ -36,6 +36,19 @@ const purchaseInvoiceSchema = new mongoose.Schema(
 
     invoiceNo: String,
     invoiceDate: { type: Date, default: Date.now },
+    siteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Site",
+      default: null,
+      index: true,
+    },
+    applicatorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Applicator",
+      default: null,
+      index: true,
+    },
+    applicatorName: { type: String, default: "" },
 
     items: [
       {

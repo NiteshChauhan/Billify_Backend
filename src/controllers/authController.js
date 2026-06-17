@@ -5,6 +5,7 @@ const Company = require("../models/Company");
 const Branch = require("../models/Branch");
 const { logAudit } = require("../utils/auditLog");
 const { ensureDefaultBranch, getSelectedBranchForCompany } = require("../utils/branchContext");
+const { getSubscriptionState } = require("../utils/subscription");
 
 exports.registerAdmin = async (req, res) => {
   try {
@@ -58,11 +59,28 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const user = await User.findOne({ email }).populate("companyId");
+    const user = await User.findOne({ email, role: "admin" }).populate("companyId");
     if (!user) return res.status(400).json({ message: "Invalid credentials" });
 
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ message: "Invalid credentials" });
+
+    if (user.isActive === false || user.accountStatus === "inactive") {
+      return res.status(403).json({
+        success: false,
+        code: "ACCOUNT_INACTIVE",
+        message: "Your account is inactive. Please contact support.",
+      });
+    }
+
+    const subscriptionState = await getSubscriptionState(user.companyId._id, user._id);
+    if (!subscriptionState.allowed) {
+      return res.status(403).json({
+        success: false,
+        code: subscriptionState.code,
+        message: subscriptionState.message,
+      });
+    }
 
     const { branches, selectedBranch } = await getSelectedBranchForCompany(user.companyId._id, null);
 
@@ -95,6 +113,7 @@ exports.login = async (req, res) => {
       },
       branches,
       selectedBranchId: selectedBranch?._id || null,
+      ...(subscriptionState.warning || {}),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -103,9 +122,18 @@ exports.login = async (req, res) => {
 
 exports.getSessionContext = async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select("_id name email role companyId isActive");
+    const user = await User.findById(req.user.userId).select("_id name email role companyId isActive accountStatus");
     if (!user || user.isActive === false) {
       return res.status(404).json({ message: "User not found" });
+    }
+
+    const subscriptionState = await getSubscriptionState(user.companyId, user._id);
+    if (!subscriptionState.allowed) {
+      return res.status(403).json({
+        success: false,
+        code: subscriptionState.code,
+        message: subscriptionState.message,
+      });
     }
 
     await ensureDefaultBranch(user.companyId);
@@ -126,6 +154,7 @@ exports.getSessionContext = async (req, res) => {
       },
       branches,
       selectedBranchId: selectedBranch?._id || null,
+      ...(subscriptionState.warning || {}),
     });
   } catch (err) {
     res.status(500).json({ message: "Failed to load session context", error: err.message });

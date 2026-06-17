@@ -14,6 +14,25 @@ const userSchema = new mongoose.Schema({
     enum: ["admin", "staff", "accountant"],
     default: "admin"
   },
+  contactNumber: String,
+  accountStatus: {
+    type: String,
+    enum: ["active", "inactive"],
+    default: "active",
+  },
+  subscriptionStatus: {
+    type: String,
+    enum: ["active", "expired", "cancelled", "trial"],
+    default: "trial",
+  },
+  subscriptionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "AdminSubscription",
+  },
+  createdBySuperAdmin: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: "SuperAdmin",
+  },
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 

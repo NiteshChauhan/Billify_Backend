@@ -10,6 +10,7 @@ const allowedOrigins = [
   "https://vue-frontend-indol.vercel.app",
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "https://billifyadmin.vercel.app",
 ]
   .flatMap((value) => String(value || "").split(","))
   .map((origin) => origin.trim())
@@ -63,6 +64,26 @@ app.get("/", (req, res) => {
 
 const authRoutes = require("./routes/authRoutes");
 app.use("/api/auth", authRoutes);
+
+const superAdminRoutes = require("./routes/superAdminRoutes");
+const subscriptionPlanRoutes = require("./routes/superAdmin/subscriptionPlan.routes");
+app.use("/api/super-admin/plans", subscriptionPlanRoutes);
+app.use("/api/super-admin", superAdminRoutes);
+
+const adminUnitRoutes = require("./routes/adminUnitRoutes");
+app.use("/api/admin/units", adminUnitRoutes);
+
+const adminApplicatorRoutes = require("./routes/adminApplicatorRoutes");
+app.use("/api/admin/applicators", adminApplicatorRoutes);
+
+const adminSiteRoutes = require("./routes/adminSiteRoutes");
+app.use("/api/admin/sites", adminSiteRoutes);
+
+const adminPartySiteApplicatorRoutes = require("./routes/adminPartySiteApplicatorRoutes");
+app.use("/api/admin/party-site-applicators", adminPartySiteApplicatorRoutes);
+
+const adminApplicatorReportRoutes = require("./routes/adminApplicatorReportRoutes");
+app.use("/api/admin", adminApplicatorReportRoutes);
 
 const productRoutes = require("./routes/productRoutes");
 app.use("/api/products", productRoutes);

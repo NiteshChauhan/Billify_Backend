@@ -365,6 +365,11 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
             <div class="detail-row split"><span class="label">${escapeHtml(labels.salesman)}</span><span class="value">${escapeHtml(invoice.salesman || "-")}</span></div>
             <div class="detail-row split"><span class="label">${escapeHtml(labels.paymentType)}</span><span class="value">${escapeHtml(String(invoice.paymentType || "credit").toUpperCase())}</span></div>
             <div class="detail-row split"><span class="label">${escapeHtml(labels.lpoNo)}</span><span class="value">${escapeHtml(invoice.lpoNo || "-")}</span></div>
+            ${
+              invoice.applicatorName
+                ? `<div class="detail-row split"><span class="label">Applicator</span><span class="value">${escapeHtml(invoice.applicatorName)}</span></div>`
+                : ""
+            }
           </div>
         </div>
       </section>

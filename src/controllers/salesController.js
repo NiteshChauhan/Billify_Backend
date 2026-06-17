@@ -5,6 +5,8 @@ const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
 const Product = require("../models/Product");
 const ReturnEntry = require("../models/Return");
+const Applicator = require("../models/Applicator");
+const Site = require("../models/Site");
 const { validateStockForSale } = require("../utils/stockValidation");
 const {
   consumeBatches,
@@ -24,6 +26,45 @@ const toSalesResponse = (invoiceDoc) => {
     ...invoice,
     vendorId: invoice.partyId,
     customerId: invoice.partyId,
+  };
+};
+
+const resolveSiteSnapshot = async (req, partyId, siteId, customerBranch = "") => {
+  if (!siteId) return { siteId: null, customerBranch: String(customerBranch || "").trim() };
+  const site = await Site.findOne({
+    _id: siteId,
+    adminId: req.user.companyId,
+    ...(partyId ? { partyId } : {}),
+    status: "active",
+    isDeleted: false,
+  }).select("_id name");
+  if (!site) {
+    const err = new Error("Invalid site");
+    err.status = 400;
+    throw err;
+  }
+  return {
+    siteId: site._id,
+    customerBranch: String(customerBranch || site.name || "").trim(),
+  };
+};
+
+const resolveApplicatorSnapshot = async (req, applicatorId) => {
+  if (!applicatorId) return { applicatorId: null, applicatorName: "" };
+  const applicator = await Applicator.findOne({
+    _id: applicatorId,
+    adminId: req.user.companyId,
+    status: "active",
+    isDeleted: false,
+  }).select("_id name");
+  if (!applicator) {
+    const err = new Error("Invalid applicator");
+    err.status = 400;
+    throw err;
+  }
+  return {
+    applicatorId: applicator._id,
+    applicatorName: applicator.name,
   };
 };
 
@@ -96,6 +137,8 @@ exports.createSalesInvoice = async (req, res) => {
       tax = 0,
       paidAmount = 0,
       invoiceDate,
+      siteId,
+      applicatorId,
       customerBranch = "",
       customerAttn = "",
       customerTel = "",
@@ -143,6 +186,9 @@ exports.createSalesInvoice = async (req, res) => {
         });
       }
     }
+
+    const siteSnapshot = await resolveSiteSnapshot(req, partyId, siteId, customerBranch);
+    const applicatorSnapshot = await resolveApplicatorSnapshot(req, applicatorId);
 
     for (const item of items) {
       await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date(), req.user.branchIsDefault);
@@ -197,12 +243,14 @@ exports.createSalesInvoice = async (req, res) => {
     const invoice = await SalesInvoice.create({
       companyId: req.user.companyId,
       branchId,
+      siteId: siteSnapshot.siteId,
+      ...applicatorSnapshot,
       partyId: partyId || undefined,
       paymentType,
       bankAccountId,
       invoiceNo,
       invoiceDate,
-      customerBranch: String(customerBranch || "").trim(),
+      customerBranch: siteSnapshot.customerBranch,
       customerAttn: String(customerAttn || "").trim(),
       customerTel: String(customerTel || "").trim(),
       salesman: String(salesman || "").trim(),
@@ -372,6 +420,15 @@ exports.getSales = async (req, res) => {
   if (dateRange) {
     query.invoiceDate = { $gte: dateRange.fromDate, $lte: dateRange.toDate };
   }
+  if (req.query.applicatorId) {
+    query.applicatorId = req.query.applicatorId;
+  }
+  if (req.query.partyId || req.query.customerId || req.query.vendorId) {
+    query.partyId = req.query.partyId || req.query.customerId || req.query.vendorId;
+  }
+  if (req.query.siteId) {
+    query.siteId = req.query.siteId;
+  }
   if (req.query.paymentType) {
     query.paymentType = String(req.query.paymentType).toLowerCase();
   }
@@ -424,6 +481,8 @@ exports.updateSalesInvoice = async (req, res) => {
       tax = 0,
       paidAmount = 0,
       invoiceDate,
+      siteId,
+      applicatorId,
       customerBranch = "",
       customerAttn = "",
       customerTel = "",
@@ -481,6 +540,9 @@ exports.updateSalesInvoice = async (req, res) => {
     if (!partyId && isCredit) {
       return res.status(400).json({ message: "Customer is required for credit invoices" });
     }
+
+    const siteSnapshot = await resolveSiteSnapshot(req, partyId, siteId, customerBranch);
+    const applicatorSnapshot = await resolveApplicatorSnapshot(req, applicatorId);
 
     const oldParty = invoice.partyId ? await Party.findById(invoice.partyId) : null;
     if (oldParty) {
@@ -570,7 +632,10 @@ exports.updateSalesInvoice = async (req, res) => {
     invoice.partyId = partyId || undefined;
     invoice.paymentType = paymentType;
     invoice.bankAccountId = bankAccountId;
-    invoice.customerBranch = String(customerBranch || "").trim();
+    invoice.siteId = siteSnapshot.siteId;
+    invoice.applicatorId = applicatorSnapshot.applicatorId;
+    invoice.applicatorName = applicatorSnapshot.applicatorName;
+    invoice.customerBranch = siteSnapshot.customerBranch;
     invoice.customerAttn = String(customerAttn || "").trim();
     invoice.customerTel = String(customerTel || "").trim();
     invoice.salesman = String(salesman || "").trim();

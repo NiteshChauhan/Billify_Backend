@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const User = require("../models/User");
+const { getSubscriptionState } = require("../utils/subscription");
 const { getSelectedBranchForCompany } = require("../utils/branchContext");
 const { isMainBranchAlias } = require("../utils/branchScope");
 
@@ -46,8 +47,12 @@ module.exports = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId).select("_id companyId role isActive");
-    if (!user || user.isActive === false) {
+    if (decoded.role === "SUPER_ADMIN" || decoded.superAdminId) {
+      return res.status(403).json({ message: "Admin access required" });
+    }
+
+    const user = await User.findById(decoded.userId).select("_id companyId role isActive accountStatus");
+    if (!user || user.isActive === false || user.accountStatus === "inactive") {
       if (shouldDebugAuth) {
         console.warn("[AUTH] User missing or inactive", {
           userId: decoded.userId,
@@ -55,6 +60,15 @@ module.exports = async (req, res, next) => {
         });
       }
       return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const subscriptionState = await getSubscriptionState(user.companyId, user._id);
+    if (!subscriptionState.allowed) {
+      return res.status(403).json({
+        success: false,
+        code: subscriptionState.code,
+        message: subscriptionState.message,
+      });
     }
 
     const requestedBranchId =

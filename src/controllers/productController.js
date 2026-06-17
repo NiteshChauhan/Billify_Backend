@@ -4,6 +4,7 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const ReturnEntry = require("../models/Return");
 const Party = require("../models/Party");
+const Unit = require("../models/Unit");
 const mongoose = require("mongoose");
 const { getAvailableStock } = require("../utils/stockUtils");
 const { withBranchScope } = require("../utils/branchScope");
@@ -11,6 +12,22 @@ const {
   assertOpeningStockEditable,
   syncOpeningStock,
 } = require("../utils/openingStockUtils");
+
+const resolveUnitSnapshot = async (req, unitId) => {
+  if (!unitId) return { unitId: null, unitName: "" };
+  const unit = await Unit.findOne({
+    _id: unitId,
+    adminId: req.user.companyId,
+    isActive: true,
+    isDeleted: false,
+  }).select("_id name shortName");
+  if (!unit) {
+    const err = new Error("Invalid unit");
+    err.status = 400;
+    throw err;
+  }
+  return { unitId: unit._id, unitName: unit.shortName || unit.name };
+};
 
 const buildProductStatusFilter = (status = "active") => {
   const normalized = String(status || "active").toLowerCase();
@@ -34,11 +51,14 @@ exports.createProduct = async (req, res) => {
       });
     }
 
+    const unitSnapshot = await resolveUnitSnapshot(req, req.body.unitId);
+
     /* ✅ SAVE FULL BODY (attributes, unit, gst, etc.) */
     const product = await Product.create({
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
       ...req.body,
+      ...unitSnapshot,
       price: Number(price || 0),
       openingStock: Number(openingStock || 0),
       openingRate: Number(openingRate || 0),
@@ -194,8 +214,11 @@ exports.updateProduct = async (req, res) => {
       );
     }
 
+    const unitSnapshot = await resolveUnitSnapshot(req, req.body.unitId);
+
     const updateData = {
       ...req.body,
+      ...unitSnapshot,
       price: Number(req.body.price ?? existing.price ?? 0),
       lastPurchaseRate: Number(req.body.lastPurchaseRate ?? existing.lastPurchaseRate ?? incomingOpeningRate),
       lastSalePrice: Number(req.body.lastSalePrice ?? existing.lastSalePrice ?? existing.price ?? 0),
