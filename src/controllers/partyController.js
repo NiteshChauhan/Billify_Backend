@@ -4,6 +4,16 @@ const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Payment = require("../models/Payment");
 const ReturnEntry = require("../models/Return");
 const { withBranchScope } = require("../utils/branchScope");
+
+const applySearchFilter = (query, searchFilter) => {
+  if (query.$or) {
+    const existingOr = query.$or;
+    delete query.$or;
+    query.$and = [...(query.$and || []), { $or: existingOr }, searchFilter];
+    return;
+  }
+  Object.assign(query, searchFilter);
+};
 const normalizeRoles = (roles = []) => {
   const list = Array.isArray(roles) ? roles : [roles];
   return [...new Set(
@@ -86,10 +96,31 @@ exports.createParty = async (req, res) => {
 /* ================= GET ALL PARTIES ================= */
 exports.getAllParties = async (req, res) => {
   try {
-    const parties = await Party.find({
+    const query = {
       ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
       isActive: true,
-    });
+    };
+    const search = String(req.query.search || req.query.q || "").trim();
+    const role = String(req.query.role || req.query.type || "").toLowerCase();
+    const limit = Math.min(Number(req.query.limit || 0), 100);
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      applySearchFilter(query, { $or: [
+        { name: searchRegex },
+        { phone: searchRegex },
+        { mobile: searchRegex },
+        { email: searchRegex },
+      ] });
+    }
+
+    if (["supplier", "customer"].includes(role)) {
+      query.roles = role;
+    }
+
+    const parties = await Party.find(query)
+      .sort({ name: 1 })
+      .limit(limit > 0 ? limit : 0);
 
     res.json(parties);
   } catch (err) {
@@ -352,3 +383,7 @@ exports.deleteParty = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+
+
+

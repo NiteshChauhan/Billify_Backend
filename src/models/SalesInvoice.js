@@ -64,6 +64,12 @@ const salesInvoiceSchema = new mongoose.Schema(
         productName: String,
         productNameAr: String,
         productNameHi: String,
+        unitId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Unit",
+          default: null,
+        },
+        unitName: { type: String, default: "" },
         packing: String,
         quantity: Number,
         rate: Number,

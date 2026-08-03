@@ -8,6 +8,16 @@ const Unit = require("../models/Unit");
 const mongoose = require("mongoose");
 const { getAvailableStock } = require("../utils/stockUtils");
 const { withBranchScope } = require("../utils/branchScope");
+
+const applySearchFilter = (query, searchFilter) => {
+  if (query.$or) {
+    const existingOr = query.$or;
+    delete query.$or;
+    query.$and = [...(query.$and || []), { $or: existingOr }, searchFilter];
+    return;
+  }
+  Object.assign(query, searchFilter);
+};
 const {
   assertOpeningStockEditable,
   syncOpeningStock,
@@ -101,6 +111,16 @@ exports.getProducts = async (req, res) => {
       req.user.branchId,
       req.user.branchIsDefault,
     );
+    const search = String(req.query.search || req.query.q || "").trim();
+
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      applySearchFilter(filter, { $or: [
+        { name: searchRegex },
+        { sku: searchRegex },
+        { unitName: searchRegex },
+      ] });
+    }
 
     const [products, total] = await Promise.all([
       Product.find(filter)
@@ -666,3 +686,7 @@ exports.getProductHistory = async (req, res) => {
     res.status(500).json({ message: "Failed to load product history", error: err.message });
   }
 };
+
+
+
+

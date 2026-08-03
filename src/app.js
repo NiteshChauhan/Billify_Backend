@@ -82,6 +82,9 @@ app.use("/api/admin/sites", adminSiteRoutes);
 const adminPartySiteApplicatorRoutes = require("./routes/adminPartySiteApplicatorRoutes");
 app.use("/api/admin/party-site-applicators", adminPartySiteApplicatorRoutes);
 
+const adminAnalyticsRoutes = require("./routes/adminAnalyticsRoutes");
+app.use("/api/admin/analytics", adminAnalyticsRoutes);
+
 const adminApplicatorReportRoutes = require("./routes/adminApplicatorReportRoutes");
 app.use("/api/admin", adminApplicatorReportRoutes);
 
@@ -171,3 +174,4 @@ app.use((err, req, res, next) => {
 });
 
 module.exports = app;
+

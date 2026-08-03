@@ -9,7 +9,16 @@ exports.listSites = async (req, res) => {
     const query = { adminId: ownerId(req), isDeleted: false };
     if (req.query.partyId) query.partyId = req.query.partyId;
     if (req.query.status) query.status = String(req.query.status).toLowerCase() === "inactive" ? "inactive" : "active";
-    const sites = await Site.find(query).populate("partyId", "name").sort({ name: 1 });
+    const search = String(req.query.search || req.query.q || "").trim();
+    const limit = Math.min(Number(req.query.limit || 0), 100);
+    if (search) {
+      const searchRegex = new RegExp(search, "i");
+      query.$or = [{ name: searchRegex }, { address: searchRegex }];
+    }
+    const sites = await Site.find(query)
+      .populate("partyId", "name")
+      .sort({ name: 1 })
+      .limit(limit > 0 ? limit : 0);
     res.json(sites);
   } catch (err) {
     res.status(500).json({ message: "Failed to load sites" });
@@ -102,3 +111,4 @@ exports.deleteSite = async (req, res) => {
     res.status(500).json({ message: "Failed to delete site" });
   }
 };
+

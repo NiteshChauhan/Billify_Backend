@@ -16,6 +16,16 @@ const {
 } = require("../utils/stockUtils");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { withBranchScope } = require("../utils/branchScope");
+
+const applySearchFilter = (query, searchFilter) => {
+  if (query.$or) {
+    const existingOr = query.$or;
+    delete query.$or;
+    query.$and = [...(query.$and || []), { $or: existingOr }, searchFilter];
+    return;
+  }
+  Object.assign(query, searchFilter);
+};
 const { logAudit } = require("../utils/auditLog");
 const { getCompanyGstEnabled } = require("../utils/companySettings");
 const { calculateInvoiceTotals } = require("../utils/invoiceTotals");
@@ -90,7 +100,7 @@ const loadSaleProducts = async (companyId, items = []) => {
   const products = await Product.find({
     _id: { $in: productIds },
     companyId,
-  }).select("name nameAr nameHi sku attributes");
+  }).select("name nameAr nameHi sku attributes unitId unitName");
 
   return new Map(products.map((product) => [String(product._id), product]));
 };
@@ -99,6 +109,8 @@ const applyInvoiceItemSnapshot = (item, product) => {
   item.productName = product?.name || item.productName || "-";
   item.productNameAr = product?.nameAr || item.productNameAr || "";
   item.productNameHi = product?.nameHi || item.productNameHi || "";
+  item.unitId = product?.unitId || item.unitId || null;
+  item.unitName = product?.unitName || item.unitName || "";
   item.packing = getProductPacking(product);
 };
 
@@ -432,10 +444,34 @@ exports.getSales = async (req, res) => {
   if (req.query.paymentType) {
     query.paymentType = String(req.query.paymentType).toLowerCase();
   }
+  if (req.query.paymentStatus || req.query.invoiceStatus) {
+    query.status = String(req.query.paymentStatus || req.query.invoiceStatus).toUpperCase();
+  }
+
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    const searchRegex = new RegExp(search, "i");
+    const [partyIds, productIds] = await Promise.all([
+      Party.distinct("_id", withBranchScope({ companyId: req.user.companyId, name: searchRegex, isActive: true }, req.user.branchId, req.user.branchIsDefault)),
+      Product.distinct("_id", withBranchScope({ companyId: req.user.companyId, name: searchRegex }, req.user.branchId, req.user.branchIsDefault)).setOptions({ withDeleted: false }),
+    ]);
+    applySearchFilter(query, { $or: [
+      { invoiceNo: searchRegex },
+      { customerBranch: searchRegex },
+      { applicatorName: searchRegex },
+      { customerTel: searchRegex },
+      { partyId: { $in: partyIds } },
+      { "items.productId": { $in: productIds } },
+      { "items.productName": searchRegex },
+    ] });
+  }
 
   const data = await SalesInvoice.find(query)
     .setOptions({ withDeleted })
-    .populate("partyId", "name")
+    .populate("partyId", "name phone mobile email")
+    .populate("siteId", "name address")
+    .populate("applicatorId", "name mobile")
+    .populate("items.productId", "name unitId unitName")
     .sort({ createdAt: -1 });
 
   res.json(data.map(toSalesResponse));
@@ -459,8 +495,10 @@ exports.getSalesById = async (req, res) => {
     ),
   )
     .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
-    .populate("partyId", "name")
-    .populate("items.productId", "name");
+    .populate("partyId", "name phone mobile email")
+    .populate("siteId", "name address")
+    .populate("applicatorId", "name mobile")
+    .populate("items.productId", "name unitId unitName");
 
   res.json(toSalesResponse(invoice));
 };
@@ -978,3 +1016,9 @@ exports.restoreSalesInvoice = async (req, res) => {
     res.status(400).json({ message: err.message || "Failed to restore sales invoice" });
   }
 };
+
+
+
+
+
+

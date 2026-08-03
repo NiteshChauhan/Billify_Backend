@@ -5,12 +5,68 @@ const Party = require("../models/Party");
 const Payment = require("../models/Payment");
 const BankAccount = require("../models/BankAccount");
 const Product = require("../models/Product");
+const Site = require("../models/Site");
+const Applicator = require("../models/Applicator");
 const ReturnEntry = require("../models/Return");
 const { getDateRangeFromQuery } = require("../utils/dateRange");
 const { withBranchScope } = require("../utils/branchScope");
+
+const applySearchFilter = (query, searchFilter) => {
+  if (query.$or) {
+    const existingOr = query.$or;
+    delete query.$or;
+    query.$and = [...(query.$and || []), { $or: existingOr }, searchFilter];
+    return;
+  }
+  Object.assign(query, searchFilter);
+};
 const { getCompanyGstEnabled } = require("../utils/companySettings");
 const { calculateInvoiceTotals } = require("../utils/invoiceTotals");
 
+const resolveSiteSnapshot = async (req, partyId, siteId) => {
+  if (!siteId) return { siteId: null };
+  const site = await Site.findOne({
+    _id: siteId,
+    adminId: req.user.companyId,
+    ...(partyId ? { partyId } : {}),
+    status: "active",
+    isDeleted: false,
+  }).select("_id name");
+  if (!site) {
+    const err = new Error("Invalid site");
+    err.status = 400;
+    throw err;
+  }
+  return { siteId: site._id };
+};
+
+const resolveApplicatorSnapshot = async (req, applicatorId) => {
+  if (!applicatorId) return { applicatorId: null, applicatorName: "" };
+  const applicator = await Applicator.findOne({
+    _id: applicatorId,
+    adminId: req.user.companyId,
+    status: "active",
+    isDeleted: false,
+  }).select("_id name");
+  if (!applicator) {
+    const err = new Error("Invalid applicator");
+    err.status = 400;
+    throw err;
+  }
+  return { applicatorId: applicator._id, applicatorName: applicator.name };
+};
+
+const applyPurchaseItemSnapshots = async (companyId, items = []) => {
+  const productIds = [...new Set((items || []).map((item) => String(item.productId || "")).filter(Boolean))];
+  const products = await Product.find({ _id: { $in: productIds }, companyId }).select("_id name unitId unitName");
+  const productMap = new Map(products.map((product) => [String(product._id), product]));
+  items.forEach((item) => {
+    const product = productMap.get(String(item.productId || ""));
+    item.productName = product?.name || item.productName || "-";
+    item.unitId = product?.unitId || item.unitId || null;
+    item.unitName = product?.unitName || item.unitName || "";
+  });
+};
 const toPurchaseResponse = (invoiceDoc) => {
   const invoice = invoiceDoc.toObject ? invoiceDoc.toObject() : invoiceDoc;
   return {
@@ -33,6 +89,8 @@ exports.createPurchaseInvoice = async (req, res) => {
       tax = 0,
       paidAmount = 0,
       invoiceDate,
+      siteId,
+      applicatorId,
     } = req.body;
     const partyId = bodyPartyId || supplierId;
 
@@ -78,12 +136,16 @@ exports.createPurchaseInvoice = async (req, res) => {
       }
     }
 
+    const siteSnapshot = await resolveSiteSnapshot(req, partyId, siteId);
+    const applicatorSnapshot = await resolveApplicatorSnapshot(req, applicatorId);
+
     const gstEnabled = await getCompanyGstEnabled(req.user.companyId);
     items.forEach((i) => {
       if (!i.productId || !i.quantity || !i.rate) {
         throw new Error("Invalid item data");
       }
     });
+    await applyPurchaseItemSnapshots(req.user.companyId, items);
     const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
       tax,
       gstEnabled,
@@ -119,6 +181,8 @@ exports.createPurchaseInvoice = async (req, res) => {
     const invoice = await PurchaseInvoice.create({
       companyId: req.user.companyId,
       branchId,
+      siteId: siteSnapshot.siteId,
+      ...applicatorSnapshot,
       partyId: partyId || undefined,
       paymentType,
       bankAccountId,
@@ -215,11 +279,42 @@ exports.getPurchases = async (req, res) => {
   if (req.query.paymentType) {
     query.paymentType = String(req.query.paymentType).toLowerCase();
   }
+  if (req.query.paymentStatus || req.query.invoiceStatus) {
+    query.status = String(req.query.paymentStatus || req.query.invoiceStatus).toUpperCase();
+  }
+  if (req.query.partyId || req.query.supplierId) {
+    query.partyId = req.query.partyId || req.query.supplierId;
+  }
+  if (req.query.siteId) {
+    query.siteId = req.query.siteId;
+  }
+  if (req.query.applicatorId) {
+    query.applicatorId = req.query.applicatorId;
+  }
+
+  const search = String(req.query.search || "").trim();
+  if (search) {
+    const searchRegex = new RegExp(search, "i");
+    const [partyIds, productIds] = await Promise.all([
+      Party.distinct("_id", withBranchScope({ companyId: req.user.companyId, name: searchRegex, isActive: true }, req.user.branchId, req.user.branchIsDefault)),
+      Product.distinct("_id", withBranchScope({ companyId: req.user.companyId, name: searchRegex }, req.user.branchId, req.user.branchIsDefault)).setOptions({ withDeleted: false }),
+    ]);
+    applySearchFilter(query, { $or: [
+      { invoiceNo: searchRegex },
+      { applicatorName: searchRegex },
+      { partyId: { $in: partyIds } },
+      { "items.productId": { $in: productIds } },
+      { "items.productName": searchRegex },
+    ] });
+  }
 
   const withDeleted = status === "deleted" || status === "all";
   const data = await PurchaseInvoice.find(query)
     .setOptions({ withDeleted })
-    .populate("partyId", "name")
+    .populate("partyId", "name phone mobile email")
+    .populate("siteId", "name address")
+    .populate("applicatorId", "name mobile")
+    .populate("items.productId", "name unitId unitName")
     .sort({ createdAt: -1 });
 
   res.json(data.map(toPurchaseResponse));
@@ -238,8 +333,10 @@ exports.getPurchaseById = async (req, res) => {
     ),
   )
     .setOptions({ withDeleted: req.query.status === "deleted" || req.query.status === "all" })
-    .populate("partyId", "name")
-    .populate("items.productId", "name");
+    .populate("partyId", "name phone mobile email")
+    .populate("siteId", "name address")
+    .populate("applicatorId", "name mobile")
+    .populate("items.productId", "name unitId unitName");
 
   res.json(toPurchaseResponse(invoice));
 };
@@ -260,6 +357,8 @@ exports.updatePurchaseInvoice = async (req, res) => {
       tax = 0,
       paidAmount = 0,
       invoiceDate,
+      siteId,
+      applicatorId,
     } = req.body;
     const partyId = bodyPartyId || supplierId;
 
@@ -313,6 +412,9 @@ exports.updatePurchaseInvoice = async (req, res) => {
       return res.status(400).json({ message: "Supplier is required for credit invoices" });
     }
 
+    const siteSnapshot = await resolveSiteSnapshot(req, partyId, siteId);
+    const applicatorSnapshot = await resolveApplicatorSnapshot(req, applicatorId);
+
     const oldParty = invoice.partyId ? await Party.findById(invoice.partyId) : null;
     if (oldParty) {
       oldParty.balance -= invoice.totalAmount - invoice.paidAmount;
@@ -344,6 +446,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
       tax,
       gstEnabled,
     });
+    await applyPurchaseItemSnapshots(req.user.companyId, items);
 
     const requestedPaid = Number(paidAmount || 0);
     if (requestedPaid > totalAmount) {
@@ -368,6 +471,9 @@ exports.updatePurchaseInvoice = async (req, res) => {
     invoice.partyId = partyId || undefined;
     invoice.paymentType = paymentType;
     invoice.bankAccountId = bankAccountId;
+    invoice.siteId = siteSnapshot.siteId;
+    invoice.applicatorId = applicatorSnapshot.applicatorId;
+    invoice.applicatorName = applicatorSnapshot.applicatorName;
 
     const normalizedInvoiceNo = String(invoiceNo || invoice.invoiceNo || "").trim();
     if (!normalizedInvoiceNo) {
@@ -643,3 +749,8 @@ exports.restorePurchaseInvoice = async (req, res) => {
     res.status(400).json({ message: err.message || "Failed to restore purchase invoice" });
   }
 };
+
+
+
+
+

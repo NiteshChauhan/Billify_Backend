@@ -56,6 +56,13 @@ const purchaseInvoiceSchema = new mongoose.Schema(
           type: mongoose.Schema.Types.ObjectId,
           ref: "Product",
         },
+        productName: String,
+        unitId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Unit",
+          default: null,
+        },
+        unitName: { type: String, default: "" },
         quantity: Number,
         rate: Number,
         amount: Number,

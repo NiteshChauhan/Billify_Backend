@@ -7,6 +7,7 @@
     "dev": "nodemon server.js",
     "create-super-admin": "node src/scripts/createSuperAdmin.js",
     "seed-plans": "node scripts/seedSubscriptionPlans.js",
+    "backfill-invoice-units": "node scripts/backfillInvoiceUnitSnapshots.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -28,3 +29,4 @@
     "nodemon": "^3.1.11"
   }
 }
+
