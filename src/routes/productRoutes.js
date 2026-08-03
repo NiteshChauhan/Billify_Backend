@@ -14,6 +14,7 @@ router.get("/:id/last-rate", productController.getLastRate);
 router.get("/:id/history", productController.getProductHistory);
 router.get("/:id", productController.getProductById);
 router.put("/:id", productController.updateProduct);
+router.patch("/:id/stock", productController.updateProductStock);
 router.delete("/:id", productController.deleteProduct);
 router.post("/:id/restore", productController.restoreProduct);
 

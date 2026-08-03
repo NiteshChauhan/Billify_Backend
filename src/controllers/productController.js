@@ -23,6 +23,43 @@ const {
   syncOpeningStock,
 } = require("../utils/openingStockUtils");
 
+const toSafeNumber = (value, fieldName = "Value", fallback = 0) => {
+  const normalized = value === undefined || value === null || value === "" ? fallback : Number(value);
+  if (!Number.isFinite(normalized)) {
+    const err = new Error(`${fieldName} must be a valid number`);
+    err.status = 400;
+    throw err;
+  }
+  if (normalized < 0) {
+    const err = new Error(`${fieldName} cannot be negative`);
+    err.status = 400;
+    throw err;
+  }
+  return normalized;
+};
+
+const decorateProductStock = async (req, product) => {
+  const row = typeof product.toObject === "function" ? product.toObject() : { ...product };
+  const stock = Number(await getAvailableStock(
+    req.user.companyId,
+    req.user.branchId || null,
+    row._id,
+    new Date(),
+    req.user.branchIsDefault,
+  ) || 0);
+  const lowStockAlert = Number(row.lowStockAlert || 0);
+  return {
+    ...row,
+    stock,
+    currentStock: stock,
+    inStock: stock,
+    totalStock: stock,
+    stockStatus: stock <= 0 ? "Out of Stock" : lowStockAlert > 0 && stock <= lowStockAlert ? "Low Stock" : "In Stock",
+    lastPurchasePrice: Number(row.lastPurchaseRate || 0),
+    lastSalePrice: Number(row.lastSalePrice || 0),
+  };
+};
+
 const resolveUnitSnapshot = async (req, unitId) => {
   if (!unitId) return { unitId: null, unitName: "" };
   const unit = await Unit.findOne({
@@ -62,6 +99,8 @@ exports.createProduct = async (req, res) => {
     }
 
     const unitSnapshot = await resolveUnitSnapshot(req, req.body.unitId);
+    const normalizedOpeningStock = toSafeNumber(openingStock, "Opening stock");
+    const normalizedOpeningRate = toSafeNumber(openingRate, "Opening rate");
 
     /* ✅ SAVE FULL BODY (attributes, unit, gst, etc.) */
     const product = await Product.create({
@@ -70,9 +109,10 @@ exports.createProduct = async (req, res) => {
       ...req.body,
       ...unitSnapshot,
       price: Number(price || 0),
-      openingStock: Number(openingStock || 0),
-      openingRate: Number(openingRate || 0),
-      lastPurchaseRate: Number(req.body.lastPurchaseRate || openingRate || 0),
+      openingStock: normalizedOpeningStock,
+      openingRate: normalizedOpeningRate,
+      lowStockAlert: toSafeNumber(req.body.lowStockAlert, "Low stock alert"),
+      lastPurchaseRate: Number(req.body.lastPurchaseRate || normalizedOpeningRate || 0),
       lastSalePrice: Number(req.body.lastSalePrice || price || 0),
     });
 
@@ -80,17 +120,18 @@ exports.createProduct = async (req, res) => {
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
       productId: product._id,
-      quantity: openingStock,
-      rate: openingRate,
+      quantity: normalizedOpeningStock,
+      rate: normalizedOpeningRate,
       syncProductFields: false,
       branchIsDefault: req.user.branchIsDefault,
     });
 
-    res.json(product);
+    res.json(await decorateProductStock(req, product));
   } catch (err) {
+    console.error("Product create failed:", err);
     res.status(err.status || 500).json({
       message: "Failed to create product",
-      error: err.message
+      ...(process.env.NODE_ENV !== "production" ? { error: err.message } : {}),
     });
   }
 };
@@ -134,21 +175,7 @@ exports.getProducts = async (req, res) => {
 
     const productRows = await Promise.all(
       products.map(async (product) => {
-        const currentStock = await getAvailableStock(
-          companyId,
-          req.user.branchId || null,
-          product._id,
-          new Date(),
-          req.user.branchIsDefault,
-        );
-        return {
-          ...product,
-          stock: Number(currentStock || 0),
-          inStock: Number(currentStock || 0),
-          totalStock: Number(currentStock || 0),
-          lastPurchasePrice: Number(product.lastPurchaseRate || 0),
-          lastSalePrice: Number(product.lastSalePrice || 0),
-        };
+        return decorateProductStock(req, product);
       }),
     );
 
@@ -212,11 +239,13 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
-    const incomingOpeningStock = Number(
+    const incomingOpeningStock = toSafeNumber(
       req.body.openingStock ?? existing.openingStock ?? 0,
+      "Opening stock",
     );
-    const incomingOpeningRate = Number(
+    const incomingOpeningRate = toSafeNumber(
       req.body.openingRate ?? existing.openingRate ?? 0,
+      "Opening rate",
     );
 
     const openingChanged =
@@ -240,6 +269,7 @@ exports.updateProduct = async (req, res) => {
       ...req.body,
       ...unitSnapshot,
       price: Number(req.body.price ?? existing.price ?? 0),
+      lowStockAlert: toSafeNumber(req.body.lowStockAlert ?? existing.lowStockAlert ?? 0, "Low stock alert"),
       lastPurchaseRate: Number(req.body.lastPurchaseRate ?? existing.lastPurchaseRate ?? incomingOpeningRate),
       lastSalePrice: Number(req.body.lastSalePrice ?? existing.lastSalePrice ?? existing.price ?? 0),
     };
@@ -269,11 +299,81 @@ exports.updateProduct = async (req, res) => {
     const updatedProduct = await Product.findOne(
       withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
     );
-    res.json(updatedProduct || product);
+    res.json(await decorateProductStock(req, updatedProduct || product));
   } catch (err) {
+    console.error("Product update failed:", err);
     res.status(err.status || 500).json({
       message: "Failed to update product",
-      error: err.message
+      ...(process.env.NODE_ENV !== "production" ? { error: err.message } : {}),
+    });
+  }
+};
+
+exports.updateProductStock = async (req, res) => {
+  try {
+    const companyId = req.user.companyId;
+    const productId = req.params.id;
+    const type = String(req.body.type || "set").toLowerCase();
+    const quantity = toSafeNumber(req.body.quantity, "Quantity");
+
+    if (!["set", "increase", "decrease"].includes(type)) {
+      return res.status(400).json({ message: "Stock adjustment type must be set, increase, or decrease" });
+    }
+
+    const product = await Product.findOne(
+      withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    const currentStock = Number(await getAvailableStock(
+      companyId,
+      req.user.branchId || null,
+      productId,
+      new Date(),
+      req.user.branchIsDefault,
+    ) || 0);
+    const nextStock =
+      type === "set"
+        ? quantity
+        : type === "increase"
+          ? currentStock + quantity
+          : currentStock - quantity;
+
+    if (nextStock < 0) {
+      return res.status(400).json({ message: "Insufficient stock" });
+    }
+
+    const result = await syncOpeningStock({
+      companyId,
+      branchId: req.user.branchId || null,
+      productId,
+      quantity: nextStock,
+      rate: product.openingRate || 0,
+      branchIsDefault: req.user.branchIsDefault,
+    });
+
+    const updatedProduct = await Product.findOne(
+      withBranchScope({ _id: productId, companyId }, req.user.branchId, req.user.branchIsDefault),
+    );
+
+    res.json({
+      success: true,
+      message: "Product stock updated successfully",
+      data: {
+        product: await decorateProductStock(req, updatedProduct || product),
+        openingStock: result.quantity,
+        currentStock: nextStock,
+      },
+    });
+  } catch (err) {
+    console.error("Product stock update failed:", err);
+    res.status(err.status || 500).json({
+      success: false,
+      message: err.status ? err.message : "Failed to update product stock",
+      ...(process.env.NODE_ENV !== "production" ? { error: err.message } : {}),
     });
   }
 };

@@ -30,11 +30,13 @@ const buildMatch = (req) => {
     req.user.branchIsDefault,
   );
 
-  if (req.query.from || req.query.to) {
+  const fromDate = req.query.fromDate || req.query.from;
+  const toDate = req.query.toDate || req.query.to;
+  if (fromDate || toDate) {
     match.invoiceDate = {};
-    if (req.query.from) match.invoiceDate.$gte = new Date(req.query.from);
-    if (req.query.to) {
-      const to = new Date(req.query.to);
+    if (fromDate) match.invoiceDate.$gte = new Date(fromDate);
+    if (toDate) {
+      const to = new Date(toDate);
       to.setHours(23, 59, 59, 999);
       match.invoiceDate.$lte = to;
     }
@@ -59,7 +61,17 @@ exports.getInvoiceAnalytics = async (req, res) => {
     const match = buildMatch(req);
     const ownerId = req.user.companyId;
 
-    const [overviewRows, qtyRows, applicatorSummary, itemSummary, distribution, activeParties, activeSites, activeApplicators] = await Promise.all([
+    const [
+      overviewRows,
+      qtyRows,
+      applicatorSummary,
+      itemSummary,
+      partySummary,
+      distribution,
+      activeParties,
+      activeSites,
+      activeApplicators,
+    ] = await Promise.all([
       SalesInvoice.aggregate([
         { $match: match },
         {
@@ -112,6 +124,22 @@ exports.getInvoiceAnalytics = async (req, res) => {
       ]),
       SalesInvoice.aggregate([
         { $match: match },
+        {
+          $group: {
+            _id: "$partyId",
+            invoiceCount: { $sum: 1 },
+            totalValue: { $sum: { $ifNull: ["$totalAmount", 0] } },
+            paidAmount: { $sum: { $ifNull: ["$paidAmount", 0] } },
+            outstandingAmount: { $sum: { $ifNull: ["$pendingAmount", 0] } },
+          },
+        },
+        { $lookup: { from: "parties", localField: "_id", foreignField: "_id", as: "party" } },
+        { $project: { _id: 0, partyId: "$_id", partyName: { $ifNull: [{ $first: "$party.name" }, "Unassigned"] }, invoiceCount: 1, totalValue: 1, paidAmount: 1, outstandingAmount: 1 } },
+        { $sort: { totalValue: -1, invoiceCount: -1 } },
+        { $limit: 50 },
+      ]),
+      SalesInvoice.aggregate([
+        { $match: match },
         { $unwind: "$items" },
         {
           $group: {
@@ -147,7 +175,7 @@ exports.getInvoiceAnalytics = async (req, res) => {
     overview.activeSites = activeSites;
     overview.activeApplicators = activeApplicators;
 
-    res.json({ success: true, overview, applicatorSummary, itemSummary, distribution });
+    res.json({ success: true, overview, applicatorSummary, itemSummary, partySummary, distribution });
   } catch (err) {
     res.status(500).json({ success: false, message: "Failed to load analytics", error: err.message });
   }

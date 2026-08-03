@@ -1,7 +1,7 @@
 const Product = require("../models/Product");
 const StockLedger = require("../models/StockLedger");
 const StockBatch = require("../models/StockBatch");
-const { withBranchScope } = require("./branchScope");
+const { normalizeBranchScope, withBranchScope } = require("./branchScope");
 
 const OPENING_REFERENCE_TYPE = "OPENING_STOCK";
 const OPENING_BLOCKING_TYPES = [

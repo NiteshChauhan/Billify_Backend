@@ -24,6 +24,28 @@ const normalizeRoles = (roles = []) => {
   )];
 };
 
+const normalizeMobileDigits = (mobile = "") => String(mobile || "").replace(/\D/g, "");
+
+const buildMobilePayload = (body = {}, existing = {}) => {
+  if (body.mobile === undefined && body.phone === undefined) {
+    return {};
+  }
+
+  const mobile = String(body.mobile ?? body.phone ?? "").trim();
+  const mobileNormalized = normalizeMobileDigits(mobile);
+  if (mobileNormalized && (mobileNormalized.length < 7 || mobileNormalized.length > 15)) {
+    const err = new Error("Please enter a valid mobile number");
+    err.status = 400;
+    throw err;
+  }
+
+  return {
+    mobile,
+    mobileNormalized,
+    phone: body.phone !== undefined ? String(body.phone || "").trim() : mobile || existing.phone || "",
+  };
+};
+
 const getScopedPartyIds = async (companyId, branchScope) => {
   const [sales, purchases, payments, returns] = await Promise.all([
     SalesInvoice.distinct("partyId", withBranchScope({ companyId }, branchScope)),
@@ -49,9 +71,15 @@ exports.createParty = async (req, res) => {
     const branchId = req.user.branchId || null;
     const roles = normalizeRoles(req.body.roles || req.body.role || req.body.type);
 
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ message: "Party name is required" });
+    }
+
     if (!roles || roles.length === 0) {
       return res.status(400).json({ message: "Roles are required" });
     }
+
+    const mobilePayload = buildMobilePayload(req.body);
 
     let party = await Party.findOne({
       ...withBranchScope({ companyId: req.user.companyId }, req.user.branchId, req.user.branchIsDefault),
@@ -65,6 +93,9 @@ exports.createParty = async (req, res) => {
           party.roles.push(role);
         }
       });
+      if (req.body.mobile !== undefined || req.body.phone !== undefined) {
+        Object.assign(party, mobilePayload);
+      }
 
       await party.save();
       return res.json(party);
@@ -79,6 +110,7 @@ exports.createParty = async (req, res) => {
       branchId: req.user.branchId || null,
       name: name.trim(),
       ...req.body,
+      ...mobilePayload,
       roles,
       openingBalance: normalizedOpeningBalance,
       remainingOpeningBalance: normalizedOpeningBalance,
@@ -89,7 +121,7 @@ exports.createParty = async (req, res) => {
 
     res.status(201).json(party);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ message: err.status ? err.message : "Failed to create party" });
   }
 };
 
@@ -110,6 +142,7 @@ exports.getAllParties = async (req, res) => {
         { name: searchRegex },
         { phone: searchRegex },
         { mobile: searchRegex },
+        { mobileNormalized: searchRegex },
         { email: searchRegex },
       ] });
     }
@@ -340,6 +373,8 @@ exports.updateParty = async (req, res) => {
       return res.status(404).json({ message: "Party not found" });
     }
 
+    Object.assign(payload, buildMobilePayload(req.body, existing));
+
     const nextOpeningBalance = Number(payload.openingBalance ?? existing.openingBalance ?? 0);
     const previousOpeningBalance = Number(existing.openingBalance || 0);
     payload.openingBalance = nextOpeningBalance;
@@ -364,7 +399,7 @@ exports.updateParty = async (req, res) => {
 
     res.json(party);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(err.status || 500).json({ message: err.status ? err.message : "Failed to update party" });
   }
 };
 

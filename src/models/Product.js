@@ -20,6 +20,7 @@ const productSchema = new mongoose.Schema({
   price: { type: Number, default: 0 },
   openingStock: { type: Number, default: 0 },
   openingRate: { type: Number, default: 0 },
+  lowStockAlert: { type: Number, default: 0, min: 0 },
   lastPurchaseRate: { type: Number, default: 0 },
   lastSalePrice: { type: Number, default: 0 },
   unitId: {

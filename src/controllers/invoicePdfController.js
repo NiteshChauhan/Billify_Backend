@@ -1,4 +1,4 @@
-﻿const SalesInvoice = require("../models/SalesInvoice");
+const SalesInvoice = require("../models/SalesInvoice");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const Company = require("../models/Company");
 const Party = require("../models/Party");
@@ -11,7 +11,7 @@ exports.salesInvoicePDF = async (req, res) => {
     companyId: req.user.companyId,
   }).populate(
     "items.productId",
-    "name nameAr nameHi sku attributes",
+    "name nameAr nameHi sku attributes unitName",
   );
   if (!invoice) {
     return res.status(404).send("Invoice not found");
@@ -33,7 +33,7 @@ exports.purchaseInvoicePDF = async (req, res) => {
     companyId: req.user.companyId,
   }).populate(
     "items.productId",
-    "name nameAr nameHi sku attributes",
+    "name nameAr nameHi sku attributes unitName",
   );
   if (!invoice) {
     return res.status(404).send("Invoice not found");

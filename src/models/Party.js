@@ -15,6 +15,8 @@ const partySchema = new mongoose.Schema(
 
     name: { type: String, required: true },
     phone: String,
+    mobile: { type: String, trim: true, default: "", index: true },
+    mobileNormalized: { type: String, default: "", index: true },
     email: String,
     address: String,
     gstNumber: String,

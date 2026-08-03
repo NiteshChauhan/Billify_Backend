@@ -177,6 +177,7 @@ const renderInvoiceRows = (invoice, company, languageMode, labels) =>
         item.productId?.attributes?.packing ||
         item.productId?.attributes?.Packing ||
         "-";
+      const unitName = item.unitName || item.productId?.unitName || "-";
 
       return `
         <tr>
@@ -190,6 +191,7 @@ const renderInvoiceRows = (invoice, company, languageMode, labels) =>
             }
           </td>
           <td class="col-pack">${escapeHtml(String(packing || "-"))}</td>
+          <td class="col-unit">${escapeHtml(String(unitName || "-"))}</td>
           <td class="col-qty num">${escapeHtml(Number(item.quantity || 0).toFixed(2))}</td>
           <td class="col-rate num">${escapeHtml(formatMoney(company, item.rate))}</td>
           <td class="col-amount num">${escapeHtml(formatMoney(company, item.amount))}</td>
@@ -197,7 +199,7 @@ const renderInvoiceRows = (invoice, company, languageMode, labels) =>
       `;
     })
     .join("") ||
-  `<tr><td colspan="6" class="empty-row">${escapeHtml(labels.items)}</td></tr>`;
+  `<tr><td colspan="7" class="empty-row">${escapeHtml(labels.items)}</td></tr>`;
 
 const renderCompanyHeader = (company, meta, labels, titleMarkup) => {
   const showEnglishBlock = !meta.isArabicOnly;
@@ -393,6 +395,7 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
                     : renderStackedLabel(englishLabels.packing, packingSecondary, headerSecondaryClass)
                 }
               </th>
+              <th class="col-unit">Unit</th>
               <th class="col-qty">
                 ${
                   meta.isArabicOnly || meta.isHindiOnly
@@ -418,7 +421,7 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
           </thead>
           <tbody>
             ${renderInvoiceRows(invoice, company, meta.mode, labels)}
-            <tr class="filler-row"><td colspan="6"></td></tr>
+            <tr class="filler-row"><td colspan="7"></td></tr>
           </tbody>
         </table>
       </section>
@@ -607,9 +610,10 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
       .col-index { width: 4%; text-align: center; }
       .col-description { width: 52%; }
       .col-pack { width: 8%; text-align: center; }
+      .col-unit { width: 7%; text-align: center; }
       .col-qty { width: 8%; }
       .col-rate { width: 13%; }
-      .col-amount { width: 15%; }
+      .col-amount { width: 8%; }
       .num { text-align: right; white-space: nowrap; }
       .desc-main {
         font-weight: 600;
