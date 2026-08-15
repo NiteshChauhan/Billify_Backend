@@ -39,6 +39,30 @@ const toSalesResponse = (invoiceDoc) => {
   };
 };
 
+const normalizeInvoiceNo = (value = "") => String(value || "").trim();
+
+const findDuplicateSalesInvoiceNo = (companyId, invoiceNo, excludeId = null) => {
+  const normalized = normalizeInvoiceNo(invoiceNo);
+  if (!normalized) return null;
+  return SalesInvoice.findOne({
+    companyId,
+    invoiceNo: normalized,
+    ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+    isDeleted: false,
+  }).select("_id invoiceNo");
+};
+
+const generateSalesInvoiceNo = async (companyId) => {
+  const count = await SalesInvoice.countDocuments({ companyId });
+  let next = count + 1;
+  let invoiceNo = `SAL-${next}`;
+  while (await findDuplicateSalesInvoiceNo(companyId, invoiceNo)) {
+    next += 1;
+    invoiceNo = `SAL-${next}`;
+  }
+  return invoiceNo;
+};
+
 const resolveSiteSnapshot = async (req, partyId, siteId, customerBranch = "") => {
   if (!siteId) return { siteId: null, customerBranch: String(customerBranch || "").trim() };
   const site = await Site.findOne({
@@ -156,6 +180,7 @@ exports.createSalesInvoice = async (req, res) => {
       customerTel = "",
       salesman = "",
       lpoNo = "",
+      invoiceNo: bodyInvoiceNo = "",
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
@@ -246,11 +271,15 @@ exports.createSalesInvoice = async (req, res) => {
 
     const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
 
-    const count = await SalesInvoice.countDocuments({
-      companyId: req.user.companyId,
-    });
-
-    const invoiceNo = `SAL-${count + 1}`;
+    const invoiceNo = normalizeInvoiceNo(bodyInvoiceNo) || await generateSalesInvoiceNo(req.user.companyId);
+    const duplicate = await findDuplicateSalesInvoiceNo(req.user.companyId, invoiceNo);
+    if (duplicate) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_BILL_NUMBER",
+        message: "Sales Bill Number already exists.",
+      });
+    }
 
     const invoice = await SalesInvoice.create({
       companyId: req.user.companyId,
@@ -482,6 +511,19 @@ exports.getReplacementBills = async (req, res) => {
   return exports.getSales(req, res);
 };
 
+exports.checkSalesInvoiceNumber = async (req, res) => {
+  try {
+    const invoiceNo = normalizeInvoiceNo(req.query.billNumber || req.query.invoiceNo || "");
+    if (!invoiceNo) {
+      return res.json({ success: true, exists: false });
+    }
+    const duplicate = await findDuplicateSalesInvoiceNo(req.user.companyId, invoiceNo, req.query.excludeId || null);
+    res.json({ success: true, exists: Boolean(duplicate) });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to check sales bill number" });
+  }
+};
+
 /* ================= GET SALES BY ID ================= */
 exports.getSalesById = async (req, res) => {
   const invoice = await SalesInvoice.findOne(
@@ -526,6 +568,7 @@ exports.updateSalesInvoice = async (req, res) => {
       customerTel = "",
       salesman = "",
       lpoNo = "",
+      invoiceNo: bodyInvoiceNo = "",
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
@@ -638,6 +681,18 @@ exports.updateSalesInvoice = async (req, res) => {
     }
 
     const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
+    const nextInvoiceNo = normalizeInvoiceNo(bodyInvoiceNo) || invoice.invoiceNo;
+    if (!nextInvoiceNo) {
+      return res.status(400).json({ message: "Sales Bill Number is required" });
+    }
+    const duplicate = await findDuplicateSalesInvoiceNo(req.user.companyId, nextInvoiceNo, invoice._id);
+    if (duplicate) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_BILL_NUMBER",
+        message: "Sales Bill Number already exists.",
+      });
+    }
 
     for (const item of items) {
       applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
@@ -678,6 +733,7 @@ exports.updateSalesInvoice = async (req, res) => {
     invoice.customerTel = String(customerTel || "").trim();
     invoice.salesman = String(salesman || "").trim();
     invoice.lpoNo = String(lpoNo || "").trim();
+    invoice.invoiceNo = nextInvoiceNo;
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = invoiceTax;

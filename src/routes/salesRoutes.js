@@ -8,6 +8,7 @@ router.use(auth);
 
 router.post("/", enforceInvoiceLimit, salesController.createSalesInvoice);
 router.get("/replacement-bills", salesController.getReplacementBills);
+router.get("/check-number", salesController.checkSalesInvoiceNumber);
 router.get("/", salesController.getSales);
 router.post("/:id/restore", salesController.restoreSalesInvoice);
 router.get("/:id", salesController.getSalesById);
