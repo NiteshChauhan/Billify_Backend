@@ -71,6 +71,13 @@ const purchaseInvoiceSchema = new mongoose.Schema(
 
     subtotal: Number,
     tax: Number,
+    otherCharges: [
+      {
+        name: { type: String, trim: true },
+        amount: { type: Number, default: 0 },
+      },
+    ],
+    otherChargesTotal: { type: Number, default: 0 },
     totalAmount: Number,
 
     paidAmount: { type: Number, default: 0 },
@@ -85,5 +92,9 @@ const purchaseInvoiceSchema = new mongoose.Schema(
 );
 
 purchaseInvoiceSchema.plugin(softDeletePlugin);
+
+purchaseInvoiceSchema.index({ companyId: 1, invoiceNo: 1, isDeleted: 1 });
+purchaseInvoiceSchema.index({ companyId: 1, branchId: 1, invoiceDate: -1, isDeleted: 1 });
+purchaseInvoiceSchema.index({ companyId: 1, partyId: 1, invoiceDate: -1, isDeleted: 1 });
 
 module.exports = mongoose.model("PurchaseInvoice", purchaseInvoiceSchema);

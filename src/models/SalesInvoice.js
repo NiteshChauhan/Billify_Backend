@@ -35,6 +35,7 @@ const salesInvoiceSchema = new mongoose.Schema(
     },
 
     invoiceNo: String,
+    isGST: { type: Boolean, default: false, index: true },
     invoiceDate: { type: Date, default: Date.now },
     customerBranch: String,
     siteId: {
@@ -93,6 +94,13 @@ const salesInvoiceSchema = new mongoose.Schema(
 
     subtotal: Number,
     tax: Number,
+    otherCharges: [
+      {
+        name: { type: String, trim: true },
+        amount: { type: Number, default: 0 },
+      },
+    ],
+    otherChargesTotal: { type: Number, default: 0 },
     totalAmount: Number,
 
     paidAmount: { type: Number, default: 0 },
@@ -107,5 +115,12 @@ const salesInvoiceSchema = new mongoose.Schema(
 );
 
 salesInvoiceSchema.plugin(softDeletePlugin);
+
+salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1, isDeleted: 1 });
+salesInvoiceSchema.index({ companyId: 1, branchId: 1, invoiceDate: -1, isDeleted: 1 });
+salesInvoiceSchema.index({ companyId: 1, branchId: 1, isGST: 1, invoiceDate: -1, isDeleted: 1 });
+salesInvoiceSchema.index({ companyId: 1, partyId: 1, invoiceDate: -1, isDeleted: 1 });
+salesInvoiceSchema.index({ companyId: 1, siteId: 1, invoiceDate: -1, isDeleted: 1 });
+salesInvoiceSchema.index({ companyId: 1, applicatorId: 1, invoiceDate: -1, isDeleted: 1 });
 
 module.exports = mongoose.model("SalesInvoice", salesInvoiceSchema);

@@ -19,7 +19,7 @@ const normalizePayload = (body = {}) => ({
 const validateRefs = async (req, payload) => {
   const [party, site, applicator] = await Promise.all([
     Party.findOne({ _id: payload.partyId, companyId: ownerId(req), isActive: true }).select("_id"),
-    Site.findOne({ _id: payload.siteId, adminId: ownerId(req), partyId: payload.partyId, isDeleted: false }).select("_id"),
+    Site.findOne({ _id: payload.siteId, adminId: ownerId(req), isDeleted: false }).select("_id"),
     Applicator.findOne({ _id: payload.applicatorId, adminId: ownerId(req), status: "active", isDeleted: false }).select("_id"),
   ]);
   if (!party) return "Invalid party";
@@ -65,16 +65,52 @@ exports.listBySite = async (req, res) => {
       status: "active",
       isDeleted: false,
     }).populate("applicatorId", "name mobile status isDeleted");
+    const assignedIds = new Set(rows.map((row) => String(row.applicatorId?._id || row.applicatorId)));
 
-    res.json(
-      rows
-        .filter((row) => row.applicatorId && row.applicatorId.status === "active" && !row.applicatorId.isDeleted)
-        .map((row) => ({
+    const search = String(req.query.search || "").trim();
+    const allQuery = { adminId: ownerId(req), status: "active", isDeleted: false };
+    if (search) {
+      allQuery.$or = [
+        { name: new RegExp(search, "i") },
+        { mobile: new RegExp(search, "i") },
+      ];
+    }
+    const allApplicators = await Applicator.find(allQuery)
+      .select("_id name mobile")
+      .sort({ name: 1 })
+      .limit(Math.min(Math.max(Number(req.query.limit || 50), 1), 100))
+      .lean();
+
+    const byId = new Map();
+    rows
+      .filter((row) => row.applicatorId && row.applicatorId.status === "active" && !row.applicatorId.isDeleted)
+      .forEach((row) => {
+        byId.set(String(row.applicatorId._id), {
           _id: row._id,
           applicatorId: row.applicatorId._id,
           applicatorName: row.applicatorId.name,
+          name: row.applicatorId.name,
           mobile: row.applicatorId.mobile || "",
-        })),
+          isAssigned: true,
+        });
+      });
+
+    allApplicators.forEach((applicator) => {
+      const key = String(applicator._id);
+      if (!byId.has(key)) {
+        byId.set(key, {
+          _id: null,
+          applicatorId: applicator._id,
+          applicatorName: applicator.name,
+          name: applicator.name,
+          mobile: applicator.mobile || "",
+          isAssigned: assignedIds.has(key),
+        });
+      }
+    });
+
+    res.json(
+      [...byId.values()].sort((a, b) => Number(b.isAssigned) - Number(a.isAssigned) || String(a.name || "").localeCompare(String(b.name || ""))),
     );
   } catch (err) {
     res.status(500).json({ message: "Failed to load assigned applicators" });

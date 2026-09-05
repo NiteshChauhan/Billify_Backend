@@ -7,6 +7,8 @@ const Product = require("../models/Product");
 const ReturnEntry = require("../models/Return");
 const Applicator = require("../models/Applicator");
 const Site = require("../models/Site");
+const PartySite = require("../models/PartySite");
+const PartySiteApplicator = require("../models/PartySiteApplicator");
 const { validateStockForSale } = require("../utils/stockValidation");
 const {
   consumeBatches,
@@ -53,6 +55,23 @@ const findDuplicateSalesInvoiceNo = (companyId, invoiceNo, excludeId = null) => 
 };
 
 const generateSalesInvoiceNo = async (companyId) => {
+  const lastInvoice = await SalesInvoice.findOne({ companyId, invoiceNo: { $exists: true, $ne: "" } })
+    .sort({ createdAt: -1, _id: -1 })
+    .select("invoiceNo")
+    .lean();
+  const lastNo = normalizeInvoiceNo(lastInvoice?.invoiceNo);
+  const match = lastNo.match(/^(.*?)(\d+)$/);
+  if (match) {
+    const [, prefix, suffix] = match;
+    let nextNumber = Number(suffix) + 1;
+    let invoiceNo = `${prefix}${String(nextNumber).padStart(suffix.length, "0")}`;
+    while (await findDuplicateSalesInvoiceNo(companyId, invoiceNo)) {
+      nextNumber += 1;
+      invoiceNo = `${prefix}${String(nextNumber).padStart(suffix.length, "0")}`;
+    }
+    return invoiceNo;
+  }
+
   const count = await SalesInvoice.countDocuments({ companyId });
   let next = count + 1;
   let invoiceNo = `SAL-${next}`;
@@ -63,12 +82,66 @@ const generateSalesInvoiceNo = async (companyId) => {
   return invoiceNo;
 };
 
+const ensurePartySiteAssignment = async (req, partyId, siteId) => {
+  if (!partyId || !siteId) return;
+  await PartySite.findOneAndUpdate(
+    {
+      adminId: req.user.companyId,
+      partyId,
+      siteId,
+      isDeleted: false,
+    },
+    {
+      $setOnInsert: {
+        adminId: req.user.companyId,
+        branchId: req.user.branchId || null,
+        partyId,
+        siteId,
+        status: "active",
+        createdBy: req.user.userId || req.user._id || null,
+      },
+      $set: {
+        status: "active",
+        updatedBy: req.user.userId || req.user._id || null,
+      },
+    },
+    { upsert: true, new: true },
+  );
+};
+
+const ensurePartySiteApplicatorAssignment = async (req, partyId, siteId, applicatorId) => {
+  if (!partyId || !siteId || !applicatorId) return;
+  await PartySiteApplicator.findOneAndUpdate(
+    {
+      adminId: req.user.companyId,
+      partyId,
+      siteId,
+      applicatorId,
+      isDeleted: false,
+    },
+    {
+      $setOnInsert: {
+        adminId: req.user.companyId,
+        branchId: req.user.branchId || null,
+        partyId,
+        siteId,
+        applicatorId,
+        createdBy: req.user.userId || req.user._id || null,
+      },
+      $set: {
+        status: "active",
+        updatedBy: req.user.userId || req.user._id || null,
+      },
+    },
+    { upsert: true, new: true },
+  );
+};
+
 const resolveSiteSnapshot = async (req, partyId, siteId, customerBranch = "") => {
   if (!siteId) return { siteId: null, customerBranch: String(customerBranch || "").trim() };
   const site = await Site.findOne({
     _id: siteId,
     adminId: req.user.companyId,
-    ...(partyId ? { partyId } : {}),
     status: "active",
     isDeleted: false,
   }).select("_id name");
@@ -181,6 +254,8 @@ exports.createSalesInvoice = async (req, res) => {
       salesman = "",
       lpoNo = "",
       invoiceNo: bodyInvoiceNo = "",
+      isGST = false,
+      otherCharges: bodyOtherCharges = [],
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
@@ -240,9 +315,10 @@ exports.createSalesInvoice = async (req, res) => {
         throw new Error("Invalid item");
       }
     });
-    const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
+    const { subtotal, tax: invoiceTax, otherCharges, otherChargesTotal, totalAmount } = calculateInvoiceTotals(items, {
       tax,
       gstEnabled,
+      otherCharges: bodyOtherCharges,
     });
 
     for (const item of items) {
@@ -290,6 +366,7 @@ exports.createSalesInvoice = async (req, res) => {
       paymentType,
       bankAccountId,
       invoiceNo,
+      isGST: Boolean(isGST),
       invoiceDate,
       customerBranch: siteSnapshot.customerBranch,
       customerAttn: String(customerAttn || "").trim(),
@@ -299,6 +376,8 @@ exports.createSalesInvoice = async (req, res) => {
       items,
       subtotal,
       tax: invoiceTax,
+      otherCharges,
+      otherChargesTotal,
       totalAmount,
       paidAmount: finalPaidAmount,
       pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
@@ -332,6 +411,9 @@ exports.createSalesInvoice = async (req, res) => {
       party.balance += totalAmount - finalPaidAmount;
       await party.save();
     }
+
+    await ensurePartySiteAssignment(req, partyId, siteSnapshot.siteId);
+    await ensurePartySiteApplicatorAssignment(req, partyId, siteSnapshot.siteId, applicatorSnapshot.applicatorId);
 
     if (finalPaidAmount > 0) {
       await Payment.create({
@@ -470,6 +552,9 @@ exports.getSales = async (req, res) => {
   if (req.query.siteId) {
     query.siteId = req.query.siteId;
   }
+  if (req.query.isGST !== undefined) {
+    query.isGST = String(req.query.isGST).toLowerCase() === "true";
+  }
   if (req.query.paymentType) {
     query.paymentType = String(req.query.paymentType).toLowerCase();
   }
@@ -524,6 +609,45 @@ exports.checkSalesInvoiceNumber = async (req, res) => {
   }
 };
 
+exports.getNextSalesInvoiceNumber = async (req, res) => {
+  try {
+    const invoiceNo = await generateSalesInvoiceNo(req.user.companyId);
+    res.json({ success: true, invoiceNo });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to generate sales bill number" });
+  }
+};
+
+exports.updateSalesInvoiceGstStatus = async (req, res) => {
+  try {
+    const isGST = Boolean(req.body.isGST);
+    const invoice = await SalesInvoice.findOneAndUpdate(
+      withBranchScope(
+        {
+          _id: req.params.id,
+          companyId: req.user.companyId,
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+      { isGST },
+      { new: true },
+    );
+    if (!invoice) {
+      return res.status(404).json({ success: false, message: "Invoice not found" });
+    }
+    res.json({
+      success: true,
+      message: isGST
+        ? "Invoice added to GST bills successfully"
+        : "Invoice removed from GST bills successfully",
+      invoice: toSalesResponse(invoice),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Failed to update GST status" });
+  }
+};
+
 /* ================= GET SALES BY ID ================= */
 exports.getSalesById = async (req, res) => {
   const invoice = await SalesInvoice.findOne(
@@ -569,6 +693,8 @@ exports.updateSalesInvoice = async (req, res) => {
       salesman = "",
       lpoNo = "",
       invoiceNo: bodyInvoiceNo = "",
+      isGST = false,
+      otherCharges: bodyOtherCharges = [],
     } = req.body;
     const partyId = bodyPartyId || customerId || vendorId;
 
@@ -668,9 +794,10 @@ exports.updateSalesInvoice = async (req, res) => {
         throw new Error("Invalid item");
       }
     });
-    const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
+    const { subtotal, tax: invoiceTax, otherCharges, otherChargesTotal, totalAmount } = calculateInvoiceTotals(items, {
       tax,
       gstEnabled,
+      otherCharges: bodyOtherCharges,
     });
 
     const requestedPaid = Number(paidAmount || 0);
@@ -734,9 +861,12 @@ exports.updateSalesInvoice = async (req, res) => {
     invoice.salesman = String(salesman || "").trim();
     invoice.lpoNo = String(lpoNo || "").trim();
     invoice.invoiceNo = nextInvoiceNo;
+    invoice.isGST = Boolean(isGST);
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = invoiceTax;
+    invoice.otherCharges = otherCharges;
+    invoice.otherChargesTotal = otherChargesTotal;
     invoice.totalAmount = totalAmount;
     invoice.invoiceDate = invoiceDate;
 
@@ -772,6 +902,9 @@ exports.updateSalesInvoice = async (req, res) => {
       newParty.balance = (newParty.balance || 0) + (totalAmount - finalPaidAmount);
       await newParty.save();
     }
+
+    await ensurePartySiteAssignment(req, partyId, siteSnapshot.siteId);
+    await ensurePartySiteApplicatorAssignment(req, partyId, siteSnapshot.siteId, applicatorSnapshot.applicatorId);
 
     if (finalPaidAmount > 0) {
       await Payment.create({
@@ -837,6 +970,7 @@ exports.updateSalesInvoice = async (req, res) => {
 
 exports.deleteSalesInvoice = async (req, res) => {
   try {
+    const branchScope = req.user.branchScope || req.user.branchId || null;
     const invoice = await SalesInvoice.findOne(
       withBranchScope(
         {
@@ -985,6 +1119,7 @@ exports.deleteSalesInvoice = async (req, res) => {
 exports.restoreSalesInvoice = async (req, res) => {
   try {
     const branchId = req.user.branchId || null;
+    const branchScope = req.user.branchScope || branchId;
     const invoice = await SalesInvoice.findOne(
       withBranchScope(
         {

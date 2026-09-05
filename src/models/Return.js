@@ -19,6 +19,20 @@ const returnSchema = new mongoose.Schema(
       ref: "Party",
       default: null,
     },
+    siteId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Site",
+      default: null,
+      index: true,
+    },
+    applicatorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Applicator",
+      default: null,
+      index: true,
+    },
+    applicatorName: { type: String, default: "" },
+    isGST: { type: Boolean, default: false, index: true },
     returnType: {
       type: String,
       enum: ["SALE_RETURN", "PURCHASE_RETURN"],
@@ -59,6 +73,12 @@ const returnSchema = new mongoose.Schema(
         quantity: { type: Number, required: true },
         rate: { type: Number, required: true },
         amount: { type: Number, required: true },
+        unitId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Unit",
+          default: null,
+        },
+        unitName: { type: String, default: "" },
         costAmount: { type: Number, default: 0 },
       },
     ],
@@ -73,5 +93,9 @@ const returnSchema = new mongoose.Schema(
 );
 
 returnSchema.plugin(softDeletePlugin);
+
+returnSchema.index({ companyId: 1, branchId: 1, returnType: 1, returnDate: -1, isDeleted: 1 });
+returnSchema.index({ companyId: 1, billType: 1, billId: 1, isDeleted: 1 });
+returnSchema.index({ companyId: 1, returnType: 1, returnNo: 1, isDeleted: 1 });
 
 module.exports = mongoose.model("Return", returnSchema);

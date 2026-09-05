@@ -276,7 +276,11 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
   const arabicLabels = getInvoiceLabels("ar");
   const hindiLabels = getInvoiceLabels("hi");
   const title = type === "SALE" ? labels.invoiceTitleSale : labels.invoiceTitlePurchase;
-  const grossAmount = Number(invoice.totalAmount || 0);
+  const productSubtotal = Number(invoice.subtotal || 0);
+  const taxAmount = Number(invoice.tax || 0);
+  const otherCharges = Array.isArray(invoice.otherCharges) ? invoice.otherCharges : [];
+  const otherChargesTotal = Number(invoice.otherChargesTotal || 0);
+  const grossAmount = productSubtotal + taxAmount;
   const discount = 0;
   const netAmount = Number(invoice.totalAmount || 0);
   const customerTel = invoice.customerTel || party?.phone || "-";
@@ -364,6 +368,7 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
           <div class="detail-grid">
             <div class="detail-row split"><span class="label">${escapeHtml(labels.invoiceNo)}</span><span class="value strong">${escapeHtml(invoice.invoiceNo || "-")}</span></div>
             <div class="detail-row split"><span class="label">${escapeHtml(labels.invoiceDate)}</span><span class="value">${escapeHtml(formatDate(invoice.invoiceDate))}</span></div>
+            <div class="detail-row split"><span class="label">GST Bill</span><span class="value">${invoice.isGST ? "Yes" : "No"}</span></div>
             <div class="detail-row split"><span class="label">${escapeHtml(labels.salesman)}</span><span class="value">${escapeHtml(invoice.salesman || "-")}</span></div>
             <div class="detail-row split"><span class="label">${escapeHtml(labels.paymentType)}</span><span class="value">${escapeHtml(String(invoice.paymentType || "credit").toUpperCase())}</span></div>
             <div class="detail-row split"><span class="label">${escapeHtml(labels.lpoNo)}</span><span class="value">${escapeHtml(invoice.lpoNo || "-")}</span></div>
@@ -432,7 +437,15 @@ const buildInvoiceHtml = ({ invoice, company, party, type, languageMode }) => {
           <div class="box-value">${escapeHtml(amountInWords(company, netAmount))}</div>
         </div>
         <div class="totals-box">
-          <div class="total-line"><span>${escapeHtml(labels.grossAmount)}</span><strong>${escapeHtml(formatMoney(company, grossAmount))}</strong></div>
+          <div class="total-line"><span>Product Subtotal</span><strong>${escapeHtml(formatMoney(company, productSubtotal))}</strong></div>
+          ${taxAmount ? `<div class="total-line"><span>${escapeHtml(labels.tax || "Tax")}</span><strong>${escapeHtml(formatMoney(company, taxAmount))}</strong></div>` : ""}
+          ${
+            otherCharges
+              .map((charge) => `<div class="total-line"><span>${escapeHtml(charge.name || "Other")}</span><strong>${escapeHtml(formatMoney(company, charge.amount))}</strong></div>`)
+              .join("")
+          }
+          <div class="total-line"><span>Other Charges</span><strong>${escapeHtml(formatMoney(company, otherChargesTotal))}</strong></div>
+          <div class="total-line"><span>${escapeHtml(labels.grossAmount)}</span><strong>${escapeHtml(formatMoney(company, grossAmount + otherChargesTotal))}</strong></div>
           <div class="total-line"><span>${escapeHtml(labels.discount)}</span><strong>${escapeHtml(formatMoney(company, discount))}</strong></div>
           <div class="total-line total-emphasis"><span>${escapeHtml(labels.netAmount)}</span><strong>${escapeHtml(formatMoney(company, netAmount))}</strong></div>
         </div>

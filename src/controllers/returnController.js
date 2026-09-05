@@ -479,6 +479,7 @@ const createReplacementPurchase = async ({
 exports.createSaleReturn = async (req, res) => {
   try {
     const { billId, items, remarks, returnDate, replacement } = req.body;
+    const normalizedReturnNo = String(req.body.returnNo || "").trim();
     const companyId = req.user.companyId;
     const branchScope = req.user.branchScope || req.user.branchId || null;
     const branchId = req.user.branchId || null;
@@ -492,6 +493,22 @@ exports.createSaleReturn = async (req, res) => {
     );
     if (!invoice) {
       return res.status(404).json({ message: "Sales bill not found" });
+    }
+
+    if (normalizedReturnNo) {
+      const duplicateReturnNo = await ReturnEntry.findOne({
+        ...withBranchScope({ companyId }, branchScope),
+        returnType: "SALE_RETURN",
+        returnNo: normalizedReturnNo,
+        isDeleted: false,
+      }).select("_id");
+      if (duplicateReturnNo) {
+        return res.status(409).json({
+          success: false,
+          code: "DUPLICATE_BILL_NUMBER",
+          message: "Sales return number already exists.",
+        });
+      }
     }
 
     validateItems(items);
@@ -526,9 +543,11 @@ exports.createSaleReturn = async (req, res) => {
       const maxAllowed = Number(soldItem.quantity || 0) - alreadyReturned;
       if (item.quantity > maxAllowed) {
         return res.status(400).json({
-          message: `Return qty exceeds sold qty for product ${item.productId}`,
+          message: `Return qty exceeds remaining sold qty for ${soldItem.productName || item.productId}. Maximum returnable: ${maxAllowed}`,
         });
       }
+      item.unitId = soldItem.unitId || null;
+      item.unitName = soldItem.unitName || "";
       if (!item.rate) {
         item.rate = Number(soldItem.rate || 0);
         item.amount = Number((item.quantity * item.rate).toFixed(2));
@@ -557,12 +576,16 @@ exports.createSaleReturn = async (req, res) => {
       companyId,
       returnType: "SALE_RETURN",
     });
-    const returnNo = `SR-${saleReturnCount + 1}`;
+    const returnNo = normalizedReturnNo || `SR-${saleReturnCount + 1}`;
 
     const returnEntry = await ReturnEntry.create({
       companyId,
       branchId,
       partyId: invoice.partyId,
+      siteId: invoice.siteId || null,
+      applicatorId: invoice.applicatorId || null,
+      applicatorName: invoice.applicatorName || "",
+      isGST: Boolean(invoice.isGST),
       returnType: "SALE_RETURN",
       billType: "SALE",
       billId: invoice._id,
@@ -814,8 +837,10 @@ exports.getReturnBills = async (req, res) => {
 
     const bills = await BillModel.find(query)
       .populate("partyId", "name")
+      .populate("siteId", "name")
+      .populate("applicatorId", "name mobile")
       .sort({ invoiceDate: -1, createdAt: -1 })
-      .select("_id invoiceNo invoiceDate totalAmount paidAmount status partyId items");
+      .select("_id invoiceNo invoiceDate totalAmount paidAmount status partyId siteId applicatorId applicatorName isGST items");
 
     res.json(
       bills.map((bill) => ({
@@ -826,6 +851,10 @@ exports.getReturnBills = async (req, res) => {
         paidAmount: bill.paidAmount,
         status: bill.status,
         partyId: bill.partyId,
+        siteId: bill.siteId,
+        applicatorId: bill.applicatorId,
+        applicatorName: bill.applicatorName || bill.applicatorId?.name || "",
+        isGST: Boolean(bill.isGST),
         itemCount: Array.isArray(bill.items) ? bill.items.length : 0,
       })),
     );
@@ -851,7 +880,9 @@ exports.getReturnBillItems = async (req, res) => {
       ),
     )
       .populate("partyId", "name")
-      .populate("items.productId", "name");
+      .populate("siteId", "name")
+      .populate("applicatorId", "name mobile")
+      .populate("items.productId", "name unitName unitId");
 
     if (!bill) {
       return res.status(404).json({ message: "Bill not found" });
@@ -885,6 +916,8 @@ exports.getReturnBillItems = async (req, res) => {
       return {
         productId,
         productName: item.productId?.name || "Unknown Product",
+        unitId: item.unitId || item.productId?.unitId || null,
+        unitName: item.unitName || item.productId?.unitName || "",
         rate: Number(item.rate || 0),
         originalQty,
         returnedQty,
@@ -901,6 +934,10 @@ exports.getReturnBillItems = async (req, res) => {
         paidAmount: bill.paidAmount,
         status: bill.status,
         partyId: bill.partyId,
+        siteId: bill.siteId,
+        applicatorId: bill.applicatorId,
+        applicatorName: bill.applicatorName || bill.applicatorId?.name || "",
+        isGST: Boolean(bill.isGST),
       },
       items,
     });
@@ -945,6 +982,8 @@ exports.getReturns = async (req, res) => {
 
 exports.deleteReturn = async (req, res) => {
   try {
+    const branchScope = req.user.branchScope || req.user.branchId || null;
+    const branchId = req.user.branchId || null;
     const entry = await ReturnEntry.findOne(
       withBranchScope(
         { _id: req.params.id, companyId: req.user.companyId },
@@ -1088,6 +1127,8 @@ exports.deleteReturn = async (req, res) => {
 
 exports.restoreReturn = async (req, res) => {
   try {
+    const branchScope = req.user.branchScope || req.user.branchId || null;
+    const branchId = req.user.branchId || null;
     const entry = await ReturnEntry.findOne(
       withBranchScope(
         {

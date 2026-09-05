@@ -85,6 +85,9 @@ app.use("/api/admin/party-site-applicators", adminPartySiteApplicatorRoutes);
 const adminAnalyticsRoutes = require("./routes/adminAnalyticsRoutes");
 app.use("/api/admin/analytics", adminAnalyticsRoutes);
 
+const adminInvoiceRoutes = require("./routes/adminInvoiceRoutes");
+app.use("/api/admin/invoices", adminInvoiceRoutes);
+
 const adminApplicatorReportRoutes = require("./routes/adminApplicatorReportRoutes");
 app.use("/api/admin", adminApplicatorReportRoutes);
 

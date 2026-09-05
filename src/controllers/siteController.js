@@ -1,5 +1,6 @@
 const Site = require("../models/Site");
 const Party = require("../models/Party");
+const PartySite = require("../models/PartySite");
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
@@ -7,7 +8,6 @@ const actorId = (req) => req.user.userId;
 exports.listSites = async (req, res) => {
   try {
     const query = { adminId: ownerId(req), isDeleted: false };
-    if (req.query.partyId) query.partyId = req.query.partyId;
     if (req.query.status) query.status = String(req.query.status).toLowerCase() === "inactive" ? "inactive" : "active";
     const search = String(req.query.search || req.query.q || "").trim();
     const limit = Math.min(Number(req.query.limit || 0), 100);
@@ -15,11 +15,32 @@ exports.listSites = async (req, res) => {
       const searchRegex = new RegExp(search, "i");
       query.$or = [{ name: searchRegex }, { address: searchRegex }];
     }
+    if (!req.query.includeOthers && req.query.partyId) query.partyId = req.query.partyId;
     const sites = await Site.find(query)
       .populate("partyId", "name")
       .sort({ name: 1 })
-      .limit(limit > 0 ? limit : 0);
-    res.json(sites);
+      .limit(limit > 0 ? limit : 0)
+      .lean();
+
+    if (!req.query.partyId) {
+      return res.json(sites);
+    }
+
+    const mappedSiteIds = await PartySite.distinct("siteId", {
+      adminId: ownerId(req),
+      partyId: req.query.partyId,
+      status: "active",
+      isDeleted: false,
+    });
+    const assignedSet = new Set(mappedSiteIds.map(String));
+    const rankedSites = sites
+      .map((site) => ({
+        ...site,
+        isAssigned: String(site.partyId?._id || site.partyId) === String(req.query.partyId) || assignedSet.has(String(site._id)),
+      }))
+      .sort((a, b) => Number(b.isAssigned) - Number(a.isAssigned) || String(a.name || "").localeCompare(String(b.name || "")));
+
+    res.json(rankedSites);
   } catch (err) {
     res.status(500).json({ message: "Failed to load sites" });
   }
@@ -47,6 +68,20 @@ exports.createSite = async (req, res) => {
       createdBy: actorId(req),
       updatedBy: actorId(req),
     });
+    await PartySite.findOneAndUpdate(
+      { adminId: ownerId(req), partyId, siteId: site._id, isDeleted: false },
+      {
+        $setOnInsert: {
+          adminId: ownerId(req),
+          branchId: req.body.branchId || req.user.branchId || null,
+          partyId,
+          siteId: site._id,
+          createdBy: actorId(req),
+        },
+        $set: { status: "active", updatedBy: actorId(req) },
+      },
+      { upsert: true },
+    );
     res.status(201).json(site);
   } catch (err) {
     res.status(500).json({ message: "Failed to create site" });

@@ -28,7 +28,6 @@ const resolveSiteSnapshot = async (req, partyId, siteId) => {
   const site = await Site.findOne({
     _id: siteId,
     adminId: req.user.companyId,
-    ...(partyId ? { partyId } : {}),
     status: "active",
     isDeleted: false,
   }).select("_id name");
@@ -91,6 +90,7 @@ exports.createPurchaseInvoice = async (req, res) => {
       invoiceDate,
       siteId,
       applicatorId,
+      otherCharges: bodyOtherCharges = [],
     } = req.body;
     const partyId = bodyPartyId || supplierId;
 
@@ -146,9 +146,10 @@ exports.createPurchaseInvoice = async (req, res) => {
       }
     });
     await applyPurchaseItemSnapshots(req.user.companyId, items);
-    const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
+    const { subtotal, tax: invoiceTax, otherCharges, otherChargesTotal, totalAmount } = calculateInvoiceTotals(items, {
       tax,
       gstEnabled,
+      otherCharges: bodyOtherCharges,
     });
 
     const requestedPaid = Number(paidAmount || 0);
@@ -191,6 +192,8 @@ exports.createPurchaseInvoice = async (req, res) => {
       items,
       subtotal,
       tax: invoiceTax,
+      otherCharges,
+      otherChargesTotal,
       totalAmount,
       paidAmount: finalPaidAmount,
       pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
@@ -359,6 +362,7 @@ exports.updatePurchaseInvoice = async (req, res) => {
       invoiceDate,
       siteId,
       applicatorId,
+      otherCharges: bodyOtherCharges = [],
     } = req.body;
     const partyId = bodyPartyId || supplierId;
 
@@ -442,9 +446,10 @@ exports.updatePurchaseInvoice = async (req, res) => {
         throw new Error("Invalid item data");
       }
     });
-    const { subtotal, tax: invoiceTax, totalAmount } = calculateInvoiceTotals(items, {
+    const { subtotal, tax: invoiceTax, otherCharges, otherChargesTotal, totalAmount } = calculateInvoiceTotals(items, {
       tax,
       gstEnabled,
+      otherCharges: bodyOtherCharges,
     });
     await applyPurchaseItemSnapshots(req.user.companyId, items);
 
@@ -494,6 +499,8 @@ exports.updatePurchaseInvoice = async (req, res) => {
     invoice.items = items;
     invoice.subtotal = subtotal;
     invoice.tax = invoiceTax;
+    invoice.otherCharges = otherCharges;
+    invoice.otherChargesTotal = otherChargesTotal;
     invoice.totalAmount = totalAmount;
     invoice.invoiceDate = invoiceDate;
 
