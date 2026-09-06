@@ -1,5 +1,6 @@
 const Product = require("../models/Product");
 const StockLedger = require("../models/StockLedger");
+const StockBatch = require("../models/StockBatch");
 const PurchaseInvoice = require("../models/PurchaseInvoice");
 const SalesInvoice = require("../models/SalesInvoice");
 const ReturnEntry = require("../models/Return");
@@ -8,7 +9,7 @@ const Unit = require("../models/Unit");
 const mongoose = require("mongoose");
 const { getAvailableStock } = require("../utils/stockUtils");
 const { withBranchScope } = require("../utils/branchScope");
-const { escapeRegex, exactNormalizedNameRegex, normalizeName } = require("../utils/normalizeName");
+const { escapeRegex, exactNormalizedNameRegex, normalizeName, normalizeSku } = require("../utils/normalizeName");
 
 const applySearchFilter = (query, searchFilter) => {
   if (query.$or) {
@@ -122,10 +123,32 @@ const buildProductStatusFilter = (status = "active") => {
   return { statusFilter: {}, withDeleted: false };
 };
 
+const decorateCreatedProduct = async (req, product, stockFallback = 0) => {
+  try {
+    return await decorateProductStock(req, product);
+  } catch (err) {
+    logCreateError("Product create response decoration failed", err);
+    const row = typeof product.toObject === "function" ? product.toObject() : { ...product };
+    const stock = Number(stockFallback || 0);
+    return {
+      ...row,
+      stock,
+      currentStock: stock,
+      inStock: stock,
+      totalStock: stock,
+      stockStatus: stock <= 0 ? "Out of Stock" : "In Stock",
+      lastPurchasePrice: Number(row.lastPurchaseRate || row.openingRate || 0),
+      lastSalePrice: Number(row.lastSalePrice || row.price || 0),
+    };
+  }
+};
+
 /* ================= CREATE PRODUCT ================= */
 exports.createProduct = async (req, res) => {
   try {
-    const { name, sku, openingStock = 0, openingRate = 0, price = 0 } = req.body;
+    const name = String(req.body.name || "").trim();
+    const sku = String(req.body.sku || "").trim();
+    const { openingStock = 0, openingRate = 0, price = 0 } = req.body;
 
     if (!name || !sku) {
       return res.status(400).json({
@@ -135,12 +158,19 @@ exports.createProduct = async (req, res) => {
 
     const unitSnapshot = await resolveUnitSnapshot(req, req.body.unitId);
     const normalizedName = normalizeName(name);
+    const normalizedSku = normalizeSku(sku);
     const exactNameRegex = exactNormalizedNameRegex(name);
+    const exactSkuRegex = new RegExp(`^${escapeRegex(sku)}$`, "i");
     const duplicate = await Product.findOne(
       withBranchScope(
         {
           companyId: req.user.companyId,
-          $or: [{ normalizedName }, { name: exactNameRegex }],
+          $or: [
+            { normalizedName },
+            { name: exactNameRegex },
+            { normalizedSku },
+            { sku: exactSkuRegex },
+          ],
         },
         req.user.branchId,
         req.user.branchIsDefault,
@@ -156,33 +186,58 @@ exports.createProduct = async (req, res) => {
     }
     const normalizedOpeningStock = toSafeNumber(openingStock, "Opening stock");
     const normalizedOpeningRate = toSafeNumber(openingRate, "Opening rate");
+    const normalizedPrice = toSafeNumber(price, "Sale price");
+    const normalizedLowStockAlert = toSafeNumber(req.body.lowStockAlert, "Low stock alert");
 
     /* ✅ SAVE FULL BODY (attributes, unit, gst, etc.) */
     const product = await Product.create({
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
       ...req.body,
+      name,
+      sku,
       normalizedName,
+      normalizedSku,
       ...unitSnapshot,
-      price: Number(price || 0),
+      price: normalizedPrice,
       openingStock: normalizedOpeningStock,
       openingRate: normalizedOpeningRate,
-      lowStockAlert: toSafeNumber(req.body.lowStockAlert, "Low stock alert"),
+      lowStockAlert: normalizedLowStockAlert,
       lastPurchaseRate: Number(req.body.lastPurchaseRate || normalizedOpeningRate || 0),
-      lastSalePrice: Number(req.body.lastSalePrice || price || 0),
+      lastSalePrice: Number(req.body.lastSalePrice || normalizedPrice || 0),
     });
 
-    await syncOpeningStock({
-      companyId: req.user.companyId,
-      branchId: req.user.branchId || null,
-      productId: product._id,
-      quantity: normalizedOpeningStock,
-      rate: normalizedOpeningRate,
-      syncProductFields: false,
-      branchIsDefault: req.user.branchIsDefault,
-    });
+    try {
+      await syncOpeningStock({
+        companyId: req.user.companyId,
+        branchId: req.user.branchId || null,
+        productId: product._id,
+        quantity: normalizedOpeningStock,
+        rate: normalizedOpeningRate,
+        syncProductFields: false,
+        branchIsDefault: req.user.branchIsDefault,
+      });
+    } catch (err) {
+      await Promise.all([
+        StockLedger.deleteMany({
+          companyId: req.user.companyId,
+          productId: product._id,
+          type: "OPENING",
+          referenceType: "OPENING_STOCK",
+        }),
+        StockBatch.deleteMany({
+          companyId: req.user.companyId,
+          productId: product._id,
+          sourceType: "OPENING",
+        }),
+        Product.deleteOne({ _id: product._id, companyId: req.user.companyId }),
+      ]).catch((rollbackError) => {
+        logCreateError("Product create rollback failed", rollbackError);
+      });
+      throw err;
+    }
 
-    res.json(await decorateProductStock(req, product));
+    res.status(201).json(await decorateCreatedProduct(req, product, normalizedOpeningStock));
   } catch (err) {
     logCreateError("Product create failed", err);
     sendProductCreateError(res, err);

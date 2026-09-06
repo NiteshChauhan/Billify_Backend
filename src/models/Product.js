@@ -18,6 +18,7 @@ const productSchema = new mongoose.Schema({
   nameAr: String,
   nameHi: String,
   sku: String,
+  normalizedSku: { type: String, default: "", trim: true, index: true },
   price: { type: Number, default: 0 },
   openingStock: { type: Number, default: 0 },
   openingRate: { type: Number, default: 0 },
@@ -36,9 +37,11 @@ const productSchema = new mongoose.Schema({
 
 productSchema.plugin(softDeletePlugin);
 productSchema.index({ companyId: 1, branchId: 1, normalizedName: 1 });
+productSchema.index({ companyId: 1, branchId: 1, normalizedSku: 1 });
 
 productSchema.pre("save", function setNormalizedName(next) {
   this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  this.normalizedSku = String(this.sku || "").trim().toUpperCase().replace(/\s+/g, " ");
   next();
 });
 

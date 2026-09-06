@@ -4,6 +4,12 @@ const normalizeName = (value = "") =>
     .toLowerCase()
     .replace(/\s+/g, " ");
 
+const normalizeSku = (value = "") =>
+  String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, " ");
+
 const escapeRegex = (value = "") => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const exactNormalizedNameRegex = (value = "") => {
@@ -17,4 +23,5 @@ module.exports = {
   escapeRegex,
   exactNormalizedNameRegex,
   normalizeName,
+  normalizeSku,
 };
