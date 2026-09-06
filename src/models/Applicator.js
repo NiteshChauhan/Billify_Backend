@@ -31,8 +31,6 @@ const applicatorSchema = new mongoose.Schema(
   { timestamps: true },
 );
 
-applicatorSchema.index({ adminId: 1 });
-applicatorSchema.index({ branchId: 1 });
 applicatorSchema.index({ adminId: 1, normalizedName: 1, isDeleted: 1 });
 applicatorSchema.index({ adminId: 1, status: 1, normalizedName: 1, isDeleted: 1 });
 

@@ -1,10 +1,41 @@
 const Site = require("../models/Site");
 const Party = require("../models/Party");
 const PartySite = require("../models/PartySite");
+const mongoose = require("mongoose");
 const { escapeRegex, exactNormalizedNameRegex, normalizeName } = require("../utils/normalizeName");
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
+const branchId = (req) => req.user.branchId || null;
+
+const logCreateError = (label, err) => {
+  console.error(label, {
+    message: err?.message,
+    name: err?.name,
+    code: err?.code,
+    stack: err?.stack,
+  });
+};
+
+const sendCreateError = (res, err, fallbackMessage, duplicateCode) => {
+  if (err?.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      code: duplicateCode,
+      message: fallbackMessage.replace(/^Failed to create /, "").replace(/^\w/, (char) => char.toUpperCase()) + " already exists",
+    });
+  }
+  if (err?.name === "CastError" || err?.name === "ValidationError") {
+    return res.status(400).json({
+      success: false,
+      message: err?.message || fallbackMessage,
+    });
+  }
+  return res.status(err?.status || 500).json({
+    success: false,
+    message: err?.status ? err.message : fallbackMessage,
+  });
+};
 
 exports.listSites = async (req, res) => {
   try {
@@ -53,6 +84,9 @@ exports.createSite = async (req, res) => {
     const name = String(req.body.name || "").trim();
     const partyId = req.body.partyId;
     if (!name || !partyId) return res.status(400).json({ message: "partyId and name are required" });
+    if (!mongoose.Types.ObjectId.isValid(String(partyId))) {
+      return res.status(400).json({ success: false, message: "Invalid party" });
+    }
     const normalizedName = normalizeName(name);
 
     const party = await Party.findOne({ _id: partyId, companyId: ownerId(req), isActive: true });
@@ -70,7 +104,7 @@ exports.createSite = async (req, res) => {
         {
           $setOnInsert: {
             adminId: ownerId(req),
-            branchId: req.body.branchId || req.user.branchId || null,
+            branchId: branchId(req),
             partyId,
             siteId: existing._id,
             createdBy: actorId(req),
@@ -84,7 +118,7 @@ exports.createSite = async (req, res) => {
 
     const site = await Site.create({
       adminId: ownerId(req),
-      branchId: req.body.branchId || req.user.branchId || null,
+      branchId: branchId(req),
       partyId,
       name,
       normalizedName,
@@ -98,7 +132,7 @@ exports.createSite = async (req, res) => {
       {
         $setOnInsert: {
           adminId: ownerId(req),
-          branchId: req.body.branchId || req.user.branchId || null,
+          branchId: branchId(req),
           partyId,
           siteId: site._id,
           createdBy: actorId(req),
@@ -109,7 +143,8 @@ exports.createSite = async (req, res) => {
     );
     res.status(201).json(site);
   } catch (err) {
-    res.status(500).json({ message: "Failed to create site" });
+    logCreateError("Create site failed", err);
+    sendCreateError(res, err, "Failed to create site", "DUPLICATE_SITE");
   }
 };
 

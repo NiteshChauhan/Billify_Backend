@@ -2,10 +2,12 @@ const PartySiteApplicator = require("../models/PartySiteApplicator");
 const Party = require("../models/Party");
 const Site = require("../models/Site");
 const Applicator = require("../models/Applicator");
+const mongoose = require("mongoose");
 const { escapeRegex, normalizeName } = require("../utils/normalizeName");
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
+const branchId = (req) => req.user.branchId || null;
 
 const normalizePayload = (body = {}) => ({
   partyId: body.partyId,
@@ -18,6 +20,11 @@ const normalizePayload = (body = {}) => ({
 });
 
 const validateRefs = async (req, payload) => {
+  for (const key of ["partyId", "siteId", "applicatorId"]) {
+    if (!mongoose.Types.ObjectId.isValid(String(payload[key] || ""))) {
+      return `Invalid ${key.replace("Id", "").toLowerCase()}`;
+    }
+  }
   const [party, site, applicator] = await Promise.all([
     Party.findOne({ _id: payload.partyId, companyId: ownerId(req), isActive: true }).select("_id"),
     Site.findOne({ _id: payload.siteId, adminId: ownerId(req), isDeleted: false }).select("_id"),
@@ -147,7 +154,7 @@ exports.createAssignment = async (req, res) => {
 
     const assignment = await PartySiteApplicator.create({
       adminId: ownerId(req),
-      branchId: req.body.branchId || req.user.branchId || null,
+      branchId: branchId(req),
       ...payload,
       createdBy: actorId(req),
       updatedBy: actorId(req),

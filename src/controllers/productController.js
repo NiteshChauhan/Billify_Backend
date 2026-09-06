@@ -24,6 +24,35 @@ const {
   syncOpeningStock,
 } = require("../utils/openingStockUtils");
 
+const logCreateError = (label, err) => {
+  console.error(label, {
+    message: err?.message,
+    name: err?.name,
+    code: err?.code,
+    stack: err?.stack,
+  });
+};
+
+const sendProductCreateError = (res, err) => {
+  if (err?.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      code: "DUPLICATE_PRODUCT",
+      message: "Product already exists",
+    });
+  }
+  if (err?.name === "CastError" || err?.name === "ValidationError" || err?.status) {
+    return res.status(err?.status || 400).json({
+      success: false,
+      message: err?.message || "Failed to create product",
+    });
+  }
+  return res.status(500).json({
+    success: false,
+    message: "Failed to create product",
+  });
+};
+
 const toSafeNumber = (value, fieldName = "Value", fallback = 0) => {
   const normalized = value === undefined || value === null || value === "" ? fallback : Number(value);
   if (!Number.isFinite(normalized)) {
@@ -63,6 +92,11 @@ const decorateProductStock = async (req, product) => {
 
 const resolveUnitSnapshot = async (req, unitId) => {
   if (!unitId) return { unitId: null, unitName: "" };
+  if (!mongoose.Types.ObjectId.isValid(String(unitId))) {
+    const err = new Error("Invalid unit");
+    err.status = 400;
+    throw err;
+  }
   const unit = await Unit.findOne({
     _id: unitId,
     adminId: req.user.companyId,
@@ -150,11 +184,8 @@ exports.createProduct = async (req, res) => {
 
     res.json(await decorateProductStock(req, product));
   } catch (err) {
-    console.error("Product create failed:", err);
-    res.status(err.status || 500).json({
-      message: "Failed to create product",
-      ...(process.env.NODE_ENV !== "production" ? { error: err.message } : {}),
-    });
+    logCreateError("Product create failed", err);
+    sendProductCreateError(res, err);
   }
 };
 

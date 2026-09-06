@@ -3,6 +3,36 @@ const { escapeRegex, exactNormalizedNameRegex, normalizeName } = require("../uti
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
+const branchId = (req) => req.user.branchId || null;
+
+const logCreateError = (label, err) => {
+  console.error(label, {
+    message: err?.message,
+    name: err?.name,
+    code: err?.code,
+    stack: err?.stack,
+  });
+};
+
+const sendCreateError = (res, err, fallbackMessage) => {
+  if (err?.code === 11000) {
+    return res.status(409).json({
+      success: false,
+      code: "DUPLICATE_APPLICATOR",
+      message: "Applicator already exists",
+    });
+  }
+  if (err?.name === "CastError" || err?.name === "ValidationError") {
+    return res.status(400).json({
+      success: false,
+      message: err?.message || fallbackMessage,
+    });
+  }
+  return res.status(err?.status || 500).json({
+    success: false,
+    message: err?.status ? err.message : fallbackMessage,
+  });
+};
 
 const normalizePayload = (body = {}) => ({
   name: String(body.name || "").trim(),
@@ -74,14 +104,15 @@ exports.createApplicator = async (req, res) => {
     }
     const applicator = await Applicator.create({
       adminId: ownerId(req),
-      branchId: req.body.branchId || req.user.branchId || null,
+      branchId: branchId(req),
       ...payload,
       createdBy: actorId(req),
       updatedBy: actorId(req),
     });
     res.status(201).json(applicator);
   } catch (err) {
-    res.status(500).json({ message: "Failed to create applicator" });
+    logCreateError("Create applicator failed", err);
+    sendCreateError(res, err, "Failed to create applicator");
   }
 };
 
