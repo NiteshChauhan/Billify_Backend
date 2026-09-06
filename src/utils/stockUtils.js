@@ -41,6 +41,7 @@ const computeLedgerAverageCost = async (companyId, branchId, productId, untilDat
 };
 
 const ensureLegacyBatch = async (companyId, branchId, productId, asOfDate = new Date(), branchIsDefault = false) => {
+  const { branchId: branchValue } = normalizeBranchScope(branchId);
   const existing = await StockBatch.exists(withBranchScope({ companyId, productId }, branchId, branchIsDefault));
   if (existing) return;
 
@@ -70,6 +71,7 @@ const getBatchAvailableStock = async (companyId, branchId, productId, branchIsDe
 };
 
 const getAvailableStock = async (companyId, branchId, productId, asOfDate = new Date(), branchIsDefault = false) => {
+  const { branchId: branchValue } = normalizeBranchScope(branchId);
   const batch = await getBatchAvailableStock(companyId, branchId, productId, branchIsDefault);
   const ledgerTotal = await getLedgerAvailableStock(companyId, branchId, productId, branchIsDefault);
 
@@ -238,6 +240,7 @@ const restoreBatchesFromBreakdown = async (companyId, branchId, breakdown = [], 
 };
 
 const restoreByAverageCost = async (companyId, branchId, productId, quantity, asOfDate = new Date(), branchIsDefault = false) => {
+  const { branchId: branchValue } = normalizeBranchScope(branchId);
   const qty = Number(quantity || 0);
   if (!(qty > 0)) return;
   const avgRate = await computeLedgerAverageCost(companyId, branchId, productId, asOfDate, branchIsDefault);

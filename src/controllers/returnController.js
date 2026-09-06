@@ -215,6 +215,22 @@ const computeReturnCostFromBreakdown = (breakdown = [], returnQty = 0) => {
   return Number(cost.toFixed(4));
 };
 
+const sendReturnError = (res, err, fallbackMessage) => {
+  console.error(fallbackMessage, err);
+  if (err?.name === "ReferenceError" || /\bis not defined\b/i.test(String(err?.message || ""))) {
+    return res.status(500).json({
+      success: false,
+      message: fallbackMessage,
+    });
+  }
+
+  return res.status(err?.status || 400).json({
+    success: false,
+    message: err?.message || fallbackMessage,
+    ...(err?.code ? { code: err.code } : {}),
+  });
+};
+
 const createReplacementSale = async ({
   companyId,
   branchId,
@@ -647,7 +663,7 @@ exports.createSaleReturn = async (req, res) => {
       replacementError,
     });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    sendReturnError(res, err, "Failed to create sales return");
   }
 };
 
@@ -814,7 +830,7 @@ exports.createPurchaseReturn = async (req, res) => {
       replacementError,
     });
   } catch (err) {
-    res.status(400).json({ message: err.message });
+    sendReturnError(res, err, "Failed to create purchase return");
   }
 };
 
