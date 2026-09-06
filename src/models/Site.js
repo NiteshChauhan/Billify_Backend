@@ -12,10 +12,11 @@ const siteSchema = new mongoose.Schema(
     partyId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Party",
-      required: true,
+      default: null,
       index: true,
     },
     name: { type: String, required: true, trim: true },
+    normalizedName: { type: String, default: "", trim: true, index: true },
     address: { type: String, default: "" },
     status: { type: String, enum: ["active", "inactive"], default: "active", index: true },
     isDeleted: { type: Boolean, default: false, index: true },
@@ -29,5 +30,12 @@ siteSchema.index(
   { adminId: 1, partyId: 1, name: 1 },
   { unique: true, partialFilterExpression: { isDeleted: false } },
 );
+siteSchema.index({ adminId: 1, normalizedName: 1, isDeleted: 1 });
+siteSchema.index({ adminId: 1, status: 1, normalizedName: 1, isDeleted: 1 });
+
+siteSchema.pre("save", function setNormalizedName(next) {
+  this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  next();
+});
 
 module.exports = mongoose.model("Site", siteSchema);

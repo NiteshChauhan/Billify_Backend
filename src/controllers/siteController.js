@@ -1,6 +1,7 @@
 const Site = require("../models/Site");
 const Party = require("../models/Party");
 const PartySite = require("../models/PartySite");
+const { escapeRegex, exactNormalizedNameRegex, normalizeName } = require("../utils/normalizeName");
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
@@ -10,16 +11,17 @@ exports.listSites = async (req, res) => {
     const query = { adminId: ownerId(req), isDeleted: false };
     if (req.query.status) query.status = String(req.query.status).toLowerCase() === "inactive" ? "inactive" : "active";
     const search = String(req.query.search || req.query.q || "").trim();
-    const limit = Math.min(Number(req.query.limit || 0), 100);
+    const limit = Math.min(Math.max(Number(req.query.limit || 20), 1), 100);
     if (search) {
-      const searchRegex = new RegExp(search, "i");
-      query.$or = [{ name: searchRegex }, { address: searchRegex }];
+      const searchRegex = new RegExp(escapeRegex(search), "i");
+      const normalizedRegex = new RegExp(escapeRegex(normalizeName(search)), "i");
+      query.$or = [{ normalizedName: normalizedRegex }, { name: searchRegex }, { address: searchRegex }];
     }
     if (!req.query.includeOthers && req.query.partyId) query.partyId = req.query.partyId;
     const sites = await Site.find(query)
       .populate("partyId", "name")
       .sort({ name: 1 })
-      .limit(limit > 0 ? limit : 0)
+      .limit(limit)
       .lean();
 
     if (!req.query.partyId) {
@@ -51,18 +53,41 @@ exports.createSite = async (req, res) => {
     const name = String(req.body.name || "").trim();
     const partyId = req.body.partyId;
     if (!name || !partyId) return res.status(400).json({ message: "partyId and name are required" });
+    const normalizedName = normalizeName(name);
 
     const party = await Party.findOne({ _id: partyId, companyId: ownerId(req), isActive: true });
     if (!party) return res.status(400).json({ message: "Invalid party" });
 
-    const existing = await Site.findOne({ adminId: ownerId(req), partyId, name, isDeleted: false });
-    if (existing) return res.status(409).json({ message: "Site already exists for this party" });
+    const exactNameRegex = exactNormalizedNameRegex(name);
+    const existing = await Site.findOne({
+      adminId: ownerId(req),
+      $or: [{ normalizedName }, { name: exactNameRegex }],
+      isDeleted: false,
+    });
+    if (existing) {
+      await PartySite.findOneAndUpdate(
+        { adminId: ownerId(req), partyId, siteId: existing._id, isDeleted: false },
+        {
+          $setOnInsert: {
+            adminId: ownerId(req),
+            branchId: req.body.branchId || req.user.branchId || null,
+            partyId,
+            siteId: existing._id,
+            createdBy: actorId(req),
+          },
+          $set: { status: "active", updatedBy: actorId(req) },
+        },
+        { upsert: true },
+      );
+      return res.status(200).json({ ...existing.toObject(), isAssigned: true });
+    }
 
     const site = await Site.create({
       adminId: ownerId(req),
       branchId: req.body.branchId || req.user.branchId || null,
       partyId,
       name,
+      normalizedName,
       address: String(req.body.address || "").trim(),
       status: String(req.body.status || "active").toLowerCase() === "inactive" ? "inactive" : "active",
       createdBy: actorId(req),
@@ -102,10 +127,20 @@ exports.updateSite = async (req, res) => {
   try {
     const name = String(req.body.name || "").trim();
     if (!name) return res.status(400).json({ message: "Site name is required" });
+    const normalizedName = normalizeName(name);
+    const exactNameRegex = exactNormalizedNameRegex(name);
+    const duplicate = await Site.findOne({
+      _id: { $ne: req.params.id },
+      adminId: ownerId(req),
+      $or: [{ normalizedName }, { name: exactNameRegex }],
+      isDeleted: false,
+    }).select("_id");
+    if (duplicate) return res.status(409).json({ message: "Site already exists" });
     const site = await Site.findOneAndUpdate(
       { _id: req.params.id, adminId: ownerId(req), isDeleted: false },
       {
         name,
+        normalizedName,
         address: String(req.body.address || "").trim(),
         status: String(req.body.status || "active").toLowerCase() === "inactive" ? "inactive" : "active",
         updatedBy: actorId(req),

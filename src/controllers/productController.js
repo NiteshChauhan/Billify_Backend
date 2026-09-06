@@ -8,6 +8,7 @@ const Unit = require("../models/Unit");
 const mongoose = require("mongoose");
 const { getAvailableStock } = require("../utils/stockUtils");
 const { withBranchScope } = require("../utils/branchScope");
+const { escapeRegex, exactNormalizedNameRegex, normalizeName } = require("../utils/normalizeName");
 
 const applySearchFilter = (query, searchFilter) => {
   if (query.$or) {
@@ -99,6 +100,26 @@ exports.createProduct = async (req, res) => {
     }
 
     const unitSnapshot = await resolveUnitSnapshot(req, req.body.unitId);
+    const normalizedName = normalizeName(name);
+    const exactNameRegex = exactNormalizedNameRegex(name);
+    const duplicate = await Product.findOne(
+      withBranchScope(
+        {
+          companyId: req.user.companyId,
+          $or: [{ normalizedName }, { name: exactNameRegex }],
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    )
+      .select("_id name sku unitId unitName price openingRate lastPurchaseRate lastSalePrice")
+      .lean();
+    if (duplicate) {
+      return res.status(409).json({
+        message: "Product already exists",
+        existing: duplicate,
+      });
+    }
     const normalizedOpeningStock = toSafeNumber(openingStock, "Opening stock");
     const normalizedOpeningRate = toSafeNumber(openingRate, "Opening rate");
 
@@ -107,6 +128,7 @@ exports.createProduct = async (req, res) => {
       companyId: req.user.companyId,
       branchId: req.user.branchId || null,
       ...req.body,
+      normalizedName,
       ...unitSnapshot,
       price: Number(price || 0),
       openingStock: normalizedOpeningStock,
@@ -153,14 +175,27 @@ exports.getProducts = async (req, res) => {
       req.user.branchIsDefault,
     );
     const search = String(req.query.search || req.query.q || "").trim();
+    const compact = req.query.compact === "true" || req.query.autocomplete === "true";
 
     if (search) {
-      const searchRegex = new RegExp(search, "i");
+      const searchRegex = new RegExp(escapeRegex(search), "i");
+      const normalizedRegex = new RegExp(escapeRegex(normalizeName(search)), "i");
       applySearchFilter(filter, { $or: [
+        { normalizedName: normalizedRegex },
         { name: searchRegex },
         { sku: searchRegex },
         { unitName: searchRegex },
       ] });
+    }
+
+    if (compact) {
+      const products = await Product.find(filter)
+        .setOptions({ withDeleted })
+        .select("_id name sku unitId unitName price openingRate lastPurchaseRate lastSalePrice lowStockAlert")
+        .sort({ name: 1 })
+        .limit(limit)
+        .lean();
+      return res.json({ data: products, total: products.length, page: 1, totalPages: 1 });
     }
 
     const [products, total] = await Promise.all([

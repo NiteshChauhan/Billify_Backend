@@ -14,6 +14,7 @@ const productSchema = new mongoose.Schema({
     index: true,
   },
   name: String,
+  normalizedName: { type: String, default: "", trim: true, index: true },
   nameAr: String,
   nameHi: String,
   sku: String,
@@ -34,5 +35,11 @@ const productSchema = new mongoose.Schema({
 });
 
 productSchema.plugin(softDeletePlugin);
+productSchema.index({ companyId: 1, branchId: 1, normalizedName: 1 });
+
+productSchema.pre("save", function setNormalizedName(next) {
+  this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  next();
+});
 
 module.exports = mongoose.model("Product", productSchema);

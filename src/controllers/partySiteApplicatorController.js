@@ -2,6 +2,7 @@ const PartySiteApplicator = require("../models/PartySiteApplicator");
 const Party = require("../models/Party");
 const Site = require("../models/Site");
 const Applicator = require("../models/Applicator");
+const { escapeRegex, normalizeName } = require("../utils/normalizeName");
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
@@ -68,11 +69,22 @@ exports.listBySite = async (req, res) => {
     const assignedIds = new Set(rows.map((row) => String(row.applicatorId?._id || row.applicatorId)));
 
     const search = String(req.query.search || "").trim();
+    const normalizedSearch = normalizeName(search);
+    const matchesSearch = (applicator = {}) => {
+      if (!normalizedSearch) return true;
+      return (
+        normalizeName(applicator.name).includes(normalizedSearch) ||
+        String(applicator.mobile || "").toLowerCase().includes(search.toLowerCase())
+      );
+    };
     const allQuery = { adminId: ownerId(req), status: "active", isDeleted: false };
     if (search) {
+      const searchRegex = new RegExp(escapeRegex(search), "i");
+      const normalizedRegex = new RegExp(escapeRegex(normalizeName(search)), "i");
       allQuery.$or = [
-        { name: new RegExp(search, "i") },
-        { mobile: new RegExp(search, "i") },
+        { normalizedName: normalizedRegex },
+        { name: searchRegex },
+        { mobile: searchRegex },
       ];
     }
     const allApplicators = await Applicator.find(allQuery)
@@ -84,6 +96,7 @@ exports.listBySite = async (req, res) => {
     const byId = new Map();
     rows
       .filter((row) => row.applicatorId && row.applicatorId.status === "active" && !row.applicatorId.isDeleted)
+      .filter((row) => matchesSearch(row.applicatorId))
       .forEach((row) => {
         byId.set(String(row.applicatorId._id), {
           _id: row._id,

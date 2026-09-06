@@ -10,6 +10,7 @@ const applicatorSchema = new mongoose.Schema(
       index: true,
     },
     name: { type: String, required: true, trim: true, index: true },
+    normalizedName: { type: String, default: "", trim: true, index: true },
     mobile: { type: String, trim: true, default: "", index: true },
     email: { type: String, trim: true, lowercase: true, default: "" },
     address: { type: String, default: "" },
@@ -32,5 +33,12 @@ const applicatorSchema = new mongoose.Schema(
 
 applicatorSchema.index({ adminId: 1 });
 applicatorSchema.index({ branchId: 1 });
+applicatorSchema.index({ adminId: 1, normalizedName: 1, isDeleted: 1 });
+applicatorSchema.index({ adminId: 1, status: 1, normalizedName: 1, isDeleted: 1 });
+
+applicatorSchema.pre("save", function setNormalizedName(next) {
+  this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  next();
+});
 
 module.exports = mongoose.model("Applicator", applicatorSchema);

@@ -1,10 +1,12 @@
 const Applicator = require("../models/Applicator");
+const { escapeRegex, exactNormalizedNameRegex, normalizeName } = require("../utils/normalizeName");
 
 const ownerId = (req) => req.user.companyId;
 const actorId = (req) => req.user.userId;
 
 const normalizePayload = (body = {}) => ({
   name: String(body.name || "").trim(),
+  normalizedName: normalizeName(body.name),
   mobile: String(body.mobile || "").trim(),
   email: String(body.email || "").trim().toLowerCase(),
   address: String(body.address || "").trim(),
@@ -18,8 +20,9 @@ const normalizePayload = (body = {}) => ({
 const findDuplicate = (req, payload, excludeId = null) => {
   const query = { adminId: ownerId(req), isDeleted: false };
   if (excludeId) query._id = { $ne: excludeId };
-  if (payload.mobile) query.mobile = payload.mobile;
-  else query.name = payload.name;
+  const exactNameRegex = exactNormalizedNameRegex(payload.name);
+  query.$or = [{ normalizedName: payload.normalizedName }, { name: exactNameRegex }];
+  if (payload.mobile) query.$or.push({ mobile: payload.mobile });
   return Applicator.findOne(query).select("_id");
 };
 
@@ -33,10 +36,13 @@ exports.listApplicators = async (req, res) => {
     if (status === "active" || status === "inactive") query.status = status;
     if (req.query.branchId) query.branchId = req.query.branchId;
     if (search) {
+      const searchRegex = new RegExp(escapeRegex(search), "i");
+      const normalizedRegex = new RegExp(escapeRegex(normalizeName(search)), "i");
       query.$or = [
-        { name: new RegExp(search, "i") },
-        { mobile: new RegExp(search, "i") },
-        { city: new RegExp(search, "i") },
+        { normalizedName: normalizedRegex },
+        { name: searchRegex },
+        { mobile: searchRegex },
+        { city: searchRegex },
       ];
     }
 
@@ -45,7 +51,8 @@ exports.listApplicators = async (req, res) => {
         .select("_id name mobile email city state status branchId createdAt")
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
-        .limit(limit),
+        .limit(limit)
+        .lean(),
       Applicator.countDocuments(query),
     ]);
     res.json({ data, total, page, totalPages: Math.max(1, Math.ceil(total / limit)) });
@@ -58,8 +65,12 @@ exports.createApplicator = async (req, res) => {
   try {
     const payload = normalizePayload(req.body);
     if (!payload.name) return res.status(400).json({ message: "Applicator name is required" });
-    if (await findDuplicate(req, payload)) {
-      return res.status(409).json({ message: "Applicator already exists" });
+    const existing = await findDuplicate(req, payload);
+    if (existing) {
+      const applicator = await Applicator.findById(existing._id)
+        .select("_id name mobile email city state status branchId createdAt")
+        .lean();
+      return res.status(200).json(applicator);
     }
     const applicator = await Applicator.create({
       adminId: ownerId(req),
