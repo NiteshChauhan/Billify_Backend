@@ -2,8 +2,13 @@ const Company = require("../models/Company");
 const Product = require("../models/Product");
 const { getAvailableStock } = require("./stockUtils");
 
-exports.validateStockForSale = async (companyId, branchId, items, branchIsDefault = false) => {
-  const company = await Company.findById(companyId).select("stockSettlementEnabled");
+const withSession = (query, session) => (session ? query.session(session) : query);
+
+exports.validateStockForSale = async (companyId, branchId, items, branchIsDefault = false, options = {}) => {
+  const company = await withSession(
+    Company.findById(companyId).select("stockSettlementEnabled"),
+    options.session,
+  );
   const stockSettlementEnabled = Boolean(company?.stockSettlementEnabled);
 
   if (!stockSettlementEnabled) {
@@ -11,14 +16,17 @@ exports.validateStockForSale = async (companyId, branchId, items, branchIsDefaul
   }
 
   const productIds = [...new Set((items || []).map((item) => String(item.productId || "")).filter(Boolean))];
-  const products = await Product.find({
-    _id: { $in: productIds },
-    companyId,
-  }).select("name");
+  const products = await withSession(
+    Product.find({
+      _id: { $in: productIds },
+      companyId,
+    }).select("name"),
+    options.session,
+  );
   const productMap = new Map(products.map((product) => [String(product._id), product]));
 
   for (const item of items) {
-    const available = await getAvailableStock(companyId, branchId, item.productId, new Date(), branchIsDefault);
+    const available = await getAvailableStock(companyId, branchId, item.productId, new Date(), branchIsDefault, options);
     if (available < item.quantity) {
       const error = new Error("Insufficient stock");
       error.code = "INSUFFICIENT_STOCK";

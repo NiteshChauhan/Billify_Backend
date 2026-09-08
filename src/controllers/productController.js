@@ -91,6 +91,41 @@ const decorateProductStock = async (req, product) => {
   };
 };
 
+const getCompactStockMap = async (req, productIds = []) => {
+  const ids = productIds.filter(Boolean);
+  if (!ids.length) return new Map();
+
+  const incomingTypes = ["PURCHASE", "OPENING", "SALE_RETURN", "TRANSFER_IN"];
+  const rows = await StockLedger.aggregate([
+    {
+      $match: withBranchScope(
+        {
+          companyId: req.user.companyId,
+          productId: { $in: ids },
+        },
+        req.user.branchId,
+        req.user.branchIsDefault,
+      ),
+    },
+    {
+      $group: {
+        _id: "$productId",
+        stock: {
+          $sum: {
+            $cond: [
+              { $in: ["$type", incomingTypes] },
+              "$quantity",
+              { $multiply: ["$quantity", -1] },
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  return new Map(rows.map((row) => [String(row._id), Number(row.stock || 0)]));
+};
+
 const resolveUnitSnapshot = async (req, unitId) => {
   if (!unitId) return { unitId: null, unitName: "" };
   if (!mongoose.Types.ObjectId.isValid(String(unitId))) {
@@ -281,7 +316,22 @@ exports.getProducts = async (req, res) => {
         .sort({ name: 1 })
         .limit(limit)
         .lean();
-      return res.json({ data: products, total: products.length, page: 1, totalPages: 1 });
+      const stockMap = await getCompactStockMap(req, products.map((product) => product._id));
+      const productRows = products.map((product) => {
+        const stock = stockMap.get(String(product._id)) ?? 0;
+        const lowStockAlert = Number(product.lowStockAlert || 0);
+        return {
+          ...product,
+          stock,
+          currentStock: stock,
+          inStock: stock,
+          totalStock: stock,
+          stockStatus: stock <= 0 ? "Out of Stock" : lowStockAlert > 0 && stock <= lowStockAlert ? "Low Stock" : "In Stock",
+          lastPurchasePrice: Number(product.lastPurchaseRate || 0),
+          lastSalePrice: Number(product.lastSalePrice || 0),
+        };
+      });
+      return res.json({ data: productRows, total: productRows.length, page: 1, totalPages: 1 });
     }
 
     const [products, total] = await Promise.all([

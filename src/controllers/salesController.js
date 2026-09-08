@@ -1,4 +1,5 @@
 const SalesInvoice = require("../models/SalesInvoice");
+const mongoose = require("mongoose");
 const StockLedger = require("../models/StockLedger");
 const Party = require("../models/Party");
 const Payment = require("../models/Payment");
@@ -43,46 +44,54 @@ const toSalesResponse = (invoiceDoc) => {
 
 const normalizeInvoiceNo = (value = "") => String(value || "").trim();
 
-const findDuplicateSalesInvoiceNo = (companyId, invoiceNo, excludeId = null) => {
+const withSession = (query, session) => (session ? query.session(session) : query);
+
+const findDuplicateSalesInvoiceNo = (companyId, invoiceNo, excludeId = null, session = null) => {
   const normalized = normalizeInvoiceNo(invoiceNo);
   if (!normalized) return null;
-  return SalesInvoice.findOne({
-    companyId,
-    invoiceNo: normalized,
-    ...(excludeId ? { _id: { $ne: excludeId } } : {}),
-    isDeleted: false,
-  }).select("_id invoiceNo");
+  return withSession(
+    SalesInvoice.findOne({
+      companyId,
+      invoiceNo: normalized,
+      ...(excludeId ? { _id: { $ne: excludeId } } : {}),
+      isDeleted: false,
+    }).select("_id invoiceNo"),
+    session,
+  );
 };
 
-const generateSalesInvoiceNo = async (companyId) => {
-  const lastInvoice = await SalesInvoice.findOne({ companyId, invoiceNo: { $exists: true, $ne: "" } })
-    .sort({ createdAt: -1, _id: -1 })
-    .select("invoiceNo")
-    .lean();
+const generateSalesInvoiceNo = async (companyId, session = null) => {
+  const lastInvoice = await withSession(
+    SalesInvoice.findOne({ companyId, invoiceNo: { $exists: true, $ne: "" } })
+      .sort({ createdAt: -1, _id: -1 })
+      .select("invoiceNo")
+      .lean(),
+    session,
+  );
   const lastNo = normalizeInvoiceNo(lastInvoice?.invoiceNo);
   const match = lastNo.match(/^(.*?)(\d+)$/);
   if (match) {
     const [, prefix, suffix] = match;
     let nextNumber = Number(suffix) + 1;
     let invoiceNo = `${prefix}${String(nextNumber).padStart(suffix.length, "0")}`;
-    while (await findDuplicateSalesInvoiceNo(companyId, invoiceNo)) {
+    while (await findDuplicateSalesInvoiceNo(companyId, invoiceNo, null, session)) {
       nextNumber += 1;
       invoiceNo = `${prefix}${String(nextNumber).padStart(suffix.length, "0")}`;
     }
     return invoiceNo;
   }
 
-  const count = await SalesInvoice.countDocuments({ companyId });
+  const count = await withSession(SalesInvoice.countDocuments({ companyId }), session);
   let next = count + 1;
   let invoiceNo = `SAL-${next}`;
-  while (await findDuplicateSalesInvoiceNo(companyId, invoiceNo)) {
+  while (await findDuplicateSalesInvoiceNo(companyId, invoiceNo, null, session)) {
     next += 1;
     invoiceNo = `SAL-${next}`;
   }
   return invoiceNo;
 };
 
-const ensurePartySiteAssignment = async (req, partyId, siteId) => {
+const ensurePartySiteAssignment = async (req, partyId, siteId, session = null) => {
   if (!partyId || !siteId) return;
   await PartySite.findOneAndUpdate(
     {
@@ -97,19 +106,19 @@ const ensurePartySiteAssignment = async (req, partyId, siteId) => {
         branchId: req.user.branchId || null,
         partyId,
         siteId,
-        status: "active",
         createdBy: req.user.userId || req.user._id || null,
       },
       $set: {
         status: "active",
+        isDeleted: false,
         updatedBy: req.user.userId || req.user._id || null,
       },
     },
-    { upsert: true, new: true },
+    { upsert: true, new: true, session },
   );
 };
 
-const ensurePartySiteApplicatorAssignment = async (req, partyId, siteId, applicatorId) => {
+const ensurePartySiteApplicatorAssignment = async (req, partyId, siteId, applicatorId, session = null) => {
   if (!partyId || !siteId || !applicatorId) return;
   await PartySiteApplicator.findOneAndUpdate(
     {
@@ -130,10 +139,11 @@ const ensurePartySiteApplicatorAssignment = async (req, partyId, siteId, applica
       },
       $set: {
         status: "active",
+        isDeleted: false,
         updatedBy: req.user.userId || req.user._id || null,
       },
     },
-    { upsert: true, new: true },
+    { upsert: true, new: true, session },
   );
 };
 
@@ -190,14 +200,17 @@ const getProductPacking = (product) => {
   );
 };
 
-const loadSaleProducts = async (companyId, items = []) => {
+const loadSaleProducts = async (companyId, items = [], session = null) => {
   const productIds = [
     ...new Set((items || []).map((item) => String(item.productId || "")).filter(Boolean)),
   ];
-  const products = await Product.find({
-    _id: { $in: productIds },
-    companyId,
-  }).select("name nameAr nameHi sku attributes unitId unitName");
+  const products = await withSession(
+    Product.find({
+      _id: { $in: productIds },
+      companyId,
+    }).select("name nameAr nameHi sku attributes unitId unitName"),
+    session,
+  );
 
   return new Map(products.map((product) => [String(product._id), product]));
 };
@@ -302,12 +315,6 @@ exports.createSalesInvoice = async (req, res) => {
     const siteSnapshot = await resolveSiteSnapshot(req, partyId, siteId, customerBranch);
     const applicatorSnapshot = await resolveApplicatorSnapshot(req, applicatorId);
 
-    for (const item of items) {
-      await ensureLegacyBatch(req.user.companyId, branchId, item.productId, invoiceDate || new Date(), req.user.branchIsDefault);
-    }
-    const saleValidation = await validateStockForSale(req.user.companyId, branchId, items, req.user.branchIsDefault);
-    const saleProducts = await loadSaleProducts(req.user.companyId, items);
-
     const gstEnabled = await getCompanyGstEnabled(req.user.companyId);
 
     items.forEach((i) => {
@@ -321,23 +328,6 @@ exports.createSalesInvoice = async (req, res) => {
       otherCharges: bodyOtherCharges,
     });
 
-    for (const item of items) {
-      applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
-      const { breakdown, actualCost } = await consumeBatches({
-        companyId: req.user.companyId,
-        branchId: branchScope,
-        productId: item.productId,
-        quantity: item.quantity,
-        asOfDate: invoiceDate || new Date(),
-        sourceHint: "SALE",
-        allowNegative: !saleValidation.stockSettlementEnabled,
-        branchIsDefault: req.user.branchIsDefault,
-      });
-      item.costBreakdown = breakdown;
-      item.actualCost = Number(actualCost || 0);
-      item.profitAmount = Number((item.amount - item.actualCost).toFixed(4));
-    }
-
     const requestedPaid = Number(paidAmount || 0);
     if (requestedPaid > totalAmount) {
       return res.status(400).json({
@@ -347,88 +337,136 @@ exports.createSalesInvoice = async (req, res) => {
 
     const finalPaidAmount = isCredit ? requestedPaid : totalAmount;
 
-    const invoiceNo = normalizeInvoiceNo(bodyInvoiceNo) || await generateSalesInvoiceNo(req.user.companyId);
-    const duplicate = await findDuplicateSalesInvoiceNo(req.user.companyId, invoiceNo);
-    if (duplicate) {
-      return res.status(409).json({
-        success: false,
-        code: "DUPLICATE_BILL_NUMBER",
-        message: "Sales Bill Number already exists.",
+    const session = await mongoose.startSession();
+    let invoice = null;
+    try {
+      await session.withTransaction(async () => {
+        const invoiceNo = normalizeInvoiceNo(bodyInvoiceNo) || await generateSalesInvoiceNo(req.user.companyId, session);
+        const duplicate = await findDuplicateSalesInvoiceNo(req.user.companyId, invoiceNo, null, session);
+        if (duplicate) {
+          const error = new Error("Sales Bill Number already exists.");
+          error.status = 409;
+          error.code = "DUPLICATE_BILL_NUMBER";
+          throw error;
+        }
+
+        for (const item of items) {
+          await ensureLegacyBatch(
+            req.user.companyId,
+            branchId,
+            item.productId,
+            invoiceDate || new Date(),
+            req.user.branchIsDefault,
+            { session },
+          );
+        }
+        const saleValidation = await validateStockForSale(
+          req.user.companyId,
+          branchId,
+          items,
+          req.user.branchIsDefault,
+          { session },
+        );
+        const saleProducts = await loadSaleProducts(req.user.companyId, items, session);
+
+        for (const item of items) {
+          applyInvoiceItemSnapshot(item, saleProducts.get(String(item.productId)));
+          const { breakdown, actualCost } = await consumeBatches({
+            companyId: req.user.companyId,
+            branchId: branchScope,
+            productId: item.productId,
+            quantity: item.quantity,
+            asOfDate: invoiceDate || new Date(),
+            sourceHint: "SALE",
+            allowNegative: !saleValidation.stockSettlementEnabled,
+            branchIsDefault: req.user.branchIsDefault,
+            session,
+          });
+          item.costBreakdown = breakdown;
+          item.actualCost = Number(actualCost || 0);
+          item.profitAmount = Number((item.amount - item.actualCost).toFixed(4));
+        }
+
+        const createdInvoices = await SalesInvoice.create([{
+          companyId: req.user.companyId,
+          branchId,
+          siteId: siteSnapshot.siteId,
+          ...applicatorSnapshot,
+          partyId: partyId || undefined,
+          paymentType,
+          bankAccountId,
+          invoiceNo,
+          isGST: Boolean(isGST),
+          invoiceDate,
+          customerBranch: siteSnapshot.customerBranch,
+          customerAttn: String(customerAttn || "").trim(),
+          customerTel: String(customerTel || "").trim(),
+          salesman: String(salesman || "").trim(),
+          lpoNo: String(lpoNo || "").trim(),
+          items,
+          subtotal,
+          tax: invoiceTax,
+          otherCharges,
+          otherChargesTotal,
+          totalAmount,
+          paidAmount: finalPaidAmount,
+          pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
+          status:
+            finalPaidAmount >= totalAmount
+              ? "PAID"
+              : finalPaidAmount > 0
+                ? "PARTIAL"
+                : "DUE",
+        }], { session });
+        invoice = createdInvoices[0];
+
+        for (const item of items) {
+          await StockLedger.create([{
+            companyId: req.user.companyId,
+            branchId,
+            productId: item.productId,
+            type: "SALE",
+            quantity: item.quantity,
+            rate: item.rate,
+            referenceType: "SALES_INVOICE",
+            referenceId: invoice._id,
+          }], { session });
+          await Product.updateOne(
+            { _id: item.productId, companyId: req.user.companyId },
+            { $set: { lastSalePrice: Number(item.rate || 0) } },
+            { session },
+          );
+        }
+
+        if (party) {
+          await Party.updateOne(
+            { _id: party._id, companyId: req.user.companyId },
+            { $inc: { balance: totalAmount - finalPaidAmount } },
+            { session },
+          );
+        }
+
+        await ensurePartySiteAssignment(req, partyId, siteSnapshot.siteId, session);
+        await ensurePartySiteApplicatorAssignment(req, partyId, siteSnapshot.siteId, applicatorSnapshot.applicatorId, session);
+
+        if (finalPaidAmount > 0) {
+          await Payment.create([{
+            companyId: req.user.companyId,
+            branchId,
+            partyId: party ? party._id : undefined,
+            invoiceType: "SALE",
+            invoiceId: invoice._id,
+            paymentType: "RECEIVED",
+            amount: finalPaidAmount,
+            paymentMode: paymentType === "bank" ? "BANK" : "CASH",
+            bankAccountId,
+            remarks: party ? "Payment at invoice creation" : "Walk-in payment at invoice creation",
+            paymentDate: invoice.invoiceDate || new Date(),
+          }], { session });
+        }
       });
-    }
-
-    const invoice = await SalesInvoice.create({
-      companyId: req.user.companyId,
-      branchId,
-      siteId: siteSnapshot.siteId,
-      ...applicatorSnapshot,
-      partyId: partyId || undefined,
-      paymentType,
-      bankAccountId,
-      invoiceNo,
-      isGST: Boolean(isGST),
-      invoiceDate,
-      customerBranch: siteSnapshot.customerBranch,
-      customerAttn: String(customerAttn || "").trim(),
-      customerTel: String(customerTel || "").trim(),
-      salesman: String(salesman || "").trim(),
-      lpoNo: String(lpoNo || "").trim(),
-      items,
-      subtotal,
-      tax: invoiceTax,
-      otherCharges,
-      otherChargesTotal,
-      totalAmount,
-      paidAmount: finalPaidAmount,
-      pendingAmount: Math.max(0, totalAmount - finalPaidAmount),
-      status:
-        finalPaidAmount >= totalAmount
-          ? "PAID"
-          : finalPaidAmount > 0
-            ? "PARTIAL"
-            : "DUE",
-    });
-
-    for (const item of items) {
-      await StockLedger.create({
-        companyId: req.user.companyId,
-        branchId,
-        productId: item.productId,
-        type: "SALE",
-        quantity: item.quantity,
-        rate: item.rate,
-        referenceType: "SALES_INVOICE",
-        referenceId: invoice._id,
-      });
-      await Product.updateOne(
-        { _id: item.productId, companyId: req.user.companyId },
-        { $set: { lastSalePrice: Number(item.rate || 0) } },
-      );
-    }
-
-    if (party) {
-      party.balance = party.balance || 0;
-      party.balance += totalAmount - finalPaidAmount;
-      await party.save();
-    }
-
-    await ensurePartySiteAssignment(req, partyId, siteSnapshot.siteId);
-    await ensurePartySiteApplicatorAssignment(req, partyId, siteSnapshot.siteId, applicatorSnapshot.applicatorId);
-
-    if (finalPaidAmount > 0) {
-      await Payment.create({
-        companyId: req.user.companyId,
-        branchId,
-        partyId: party ? party._id : undefined,
-        invoiceType: "SALE",
-        invoiceId: invoice._id,
-        paymentType: "RECEIVED",
-        amount: finalPaidAmount,
-        paymentMode: paymentType === "bank" ? "BANK" : "CASH",
-        bankAccountId,
-        remarks: party ? "Payment at invoice creation" : "Walk-in payment at invoice creation",
-        paymentDate: invoice.invoiceDate || new Date(),
-      });
+    } finally {
+      await session.endSession();
     }
 
     res.json(toSalesResponse(invoice));
@@ -442,7 +480,17 @@ exports.createSalesInvoice = async (req, res) => {
         availableStock: err.availableStock,
       });
     }
-    res.status(400).json({ error: err.message });
+    if (err.code === "DUPLICATE_BILL_NUMBER" || err.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        code: "DUPLICATE_BILL_NUMBER",
+        message: "Sales Bill Number already exists.",
+      });
+    }
+    if (err.name === "ValidationError" || err.name === "CastError" || err.status === 400) {
+      return res.status(400).json({ error: err.message });
+    }
+    res.status(err.status || 500).json({ error: err.message || "Failed to create sales invoice" });
   }
 };
 

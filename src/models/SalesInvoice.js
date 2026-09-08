@@ -116,6 +116,16 @@ const salesInvoiceSchema = new mongoose.Schema(
 
 salesInvoiceSchema.plugin(softDeletePlugin);
 
+salesInvoiceSchema.index(
+  { companyId: 1, invoiceNo: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      isDeleted: false,
+      invoiceNo: { $exists: true, $type: "string", $gt: "" },
+    },
+  },
+);
 salesInvoiceSchema.index({ companyId: 1, invoiceNo: 1, isDeleted: 1 });
 salesInvoiceSchema.index({ companyId: 1, branchId: 1, invoiceDate: -1, isDeleted: 1 });
 salesInvoiceSchema.index({ companyId: 1, branchId: 1, isGST: 1, invoiceDate: -1, isDeleted: 1 });
