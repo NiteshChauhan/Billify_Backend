@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { normalizeName } = require("../utils/normalizeName");
 
 const applicatorSchema = new mongoose.Schema(
   {
@@ -34,9 +35,27 @@ const applicatorSchema = new mongoose.Schema(
 applicatorSchema.index({ adminId: 1, normalizedName: 1, isDeleted: 1 });
 applicatorSchema.index({ adminId: 1, status: 1, normalizedName: 1, isDeleted: 1 });
 
-applicatorSchema.pre("save", function setNormalizedName(next) {
-  this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
-  next();
+applicatorSchema.pre("save", function setNormalizedName() {
+  if (this.isModified("name") || !this.normalizedName) {
+    this.normalizedName = normalizeName(this.name);
+  }
 });
+
+const setNormalizedNameOnUpdate = function setNormalizedNameOnUpdate() {
+  const update = this.getUpdate() || {};
+  const name = update.name ?? update.$set?.name;
+  if (name === undefined) return;
+
+  update.$set = {
+    ...(update.$set || {}),
+    normalizedName: normalizeName(name),
+  };
+  delete update.normalizedName;
+  this.setUpdate(update);
+};
+
+applicatorSchema.pre("findOneAndUpdate", setNormalizedNameOnUpdate);
+applicatorSchema.pre("updateOne", setNormalizedNameOnUpdate);
+applicatorSchema.pre("updateMany", setNormalizedNameOnUpdate);
 
 module.exports = mongoose.model("Applicator", applicatorSchema);

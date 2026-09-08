@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { normalizeName } = require("../utils/normalizeName");
 
 const siteSchema = new mongoose.Schema(
   {
@@ -33,9 +34,27 @@ siteSchema.index(
 siteSchema.index({ adminId: 1, normalizedName: 1, isDeleted: 1 });
 siteSchema.index({ adminId: 1, status: 1, normalizedName: 1, isDeleted: 1 });
 
-siteSchema.pre("save", function setNormalizedName(next) {
-  this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
-  next();
+siteSchema.pre("save", function setNormalizedName() {
+  if (this.isModified("name") || !this.normalizedName) {
+    this.normalizedName = normalizeName(this.name);
+  }
 });
+
+const setNormalizedNameOnUpdate = function setNormalizedNameOnUpdate() {
+  const update = this.getUpdate() || {};
+  const name = update.name ?? update.$set?.name;
+  if (name === undefined) return;
+
+  update.$set = {
+    ...(update.$set || {}),
+    normalizedName: normalizeName(name),
+  };
+  delete update.normalizedName;
+  this.setUpdate(update);
+};
+
+siteSchema.pre("findOneAndUpdate", setNormalizedNameOnUpdate);
+siteSchema.pre("updateOne", setNormalizedNameOnUpdate);
+siteSchema.pre("updateMany", setNormalizedNameOnUpdate);
 
 module.exports = mongoose.model("Site", siteSchema);

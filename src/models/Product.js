@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const softDeletePlugin = require("./plugins/softDeletePlugin");
+const { normalizeName, normalizeSku } = require("../utils/normalizeName");
 
 const productSchema = new mongoose.Schema({
   companyId: {
@@ -39,10 +40,31 @@ productSchema.plugin(softDeletePlugin);
 productSchema.index({ companyId: 1, branchId: 1, normalizedName: 1 });
 productSchema.index({ companyId: 1, branchId: 1, normalizedSku: 1 });
 
-productSchema.pre("save", function setNormalizedName(next) {
-  this.normalizedName = String(this.name || "").trim().toLowerCase().replace(/\s+/g, " ");
-  this.normalizedSku = String(this.sku || "").trim().toUpperCase().replace(/\s+/g, " ");
-  next();
+productSchema.pre("save", function setNormalizedFields() {
+  if (this.isModified("name") || !this.normalizedName) {
+    this.normalizedName = normalizeName(this.name);
+  }
+  if (this.isModified("sku") || !this.normalizedSku) {
+    this.normalizedSku = normalizeSku(this.sku);
+  }
 });
+
+const setNormalizedFieldsOnUpdate = function setNormalizedFieldsOnUpdate() {
+  const update = this.getUpdate() || {};
+  const name = update.name ?? update.$set?.name;
+  const sku = update.sku ?? update.$set?.sku;
+  if (name === undefined && sku === undefined) return;
+
+  update.$set = { ...(update.$set || {}) };
+  if (name !== undefined) update.$set.normalizedName = normalizeName(name);
+  if (sku !== undefined) update.$set.normalizedSku = normalizeSku(sku);
+  delete update.normalizedName;
+  delete update.normalizedSku;
+  this.setUpdate(update);
+};
+
+productSchema.pre("findOneAndUpdate", setNormalizedFieldsOnUpdate);
+productSchema.pre("updateOne", setNormalizedFieldsOnUpdate);
+productSchema.pre("updateMany", setNormalizedFieldsOnUpdate);
 
 module.exports = mongoose.model("Product", productSchema);
